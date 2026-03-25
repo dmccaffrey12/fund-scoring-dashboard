@@ -1748,7 +1748,7 @@ elif page == "2023 vs 2025 Comparison":
                     st.markdown(
                         f'<div class="compare-card-2023">'
                         f'<div style="font-size:0.7rem; color:#f59e0b; text-transform:uppercase; letter-spacing:0.08em; margin-bottom:8px;">2023 Combined System</div>'
-                        f'<div style="font-size:3rem; font-weight:800; color:#f59e0b;">{s2023:.1f if s2023 else "N/A"}</div>'
+                        f'<div style="font-size:3rem; font-weight:800; color:#f59e0b;">{f"{s2023:.1f}" if s2023 else "N/A"}</div>'
                         f'<div style="font-size:0.8rem; color:#7a7875; margin-top:6px;">15 metrics · All funds together</div>'
                         f'</div>',
                         unsafe_allow_html=True,
@@ -1759,7 +1759,7 @@ elif page == "2023 vs 2025 Comparison":
                     st.markdown(
                         f'<div class="compare-card-2025">'
                         f'<div style="font-size:0.7rem; color:#4F98A3; text-transform:uppercase; letter-spacing:0.08em; margin-bottom:8px;">2025 {fund_type} System</div>'
-                        f'<div style="font-size:3rem; font-weight:800; color:{score_color};">{s2025:.1f if s2025 else "N/A"}</div>'
+                        f'<div style="font-size:3rem; font-weight:800; color:{score_color};">{f"{s2025:.1f}" if s2025 else "N/A"}</div>'
                         f'<div style="font-size:0.8rem; color:#7a7875; margin-top:6px;">{len(ACTIVE_METRICS) if fund_type == "Active" else len(PASSIVE_METRICS)} metrics · {fund_type} funds only</div>'
                         f'</div>',
                         unsafe_allow_html=True,
