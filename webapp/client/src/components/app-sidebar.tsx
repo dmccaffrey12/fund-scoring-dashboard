@@ -5,6 +5,7 @@ import {
   BarChart3,
   Shield,
   Upload,
+  Clock,
 } from "lucide-react";
 import { Link, useLocation } from "wouter";
 import {
@@ -26,6 +27,7 @@ const navItems = [
   { title: "Batch Scores", url: "/scores", icon: Table2 },
   { title: "Fund Lookup", url: "/lookup", icon: Search },
   { title: "Category Analysis", url: "/categories", icon: BarChart3 },
+  { title: "History", url: "/history", icon: Clock },
   { title: "Monitoring", url: "/monitoring", icon: Shield },
   { title: "CSV Upload", url: "/upload", icon: Upload },
 ];

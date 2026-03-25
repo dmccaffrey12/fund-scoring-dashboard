@@ -5,7 +5,8 @@ import { Skeleton } from "@/components/ui/skeleton";
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell,
 } from "recharts";
-import { TrendingUp, TrendingDown, Activity, Hash } from "lucide-react";
+import { TrendingUp, TrendingDown, Activity, Hash, FileText } from "lucide-react";
+import { Button } from "@/components/ui/button";
 import type { Fund } from "@shared/schema";
 import { Link } from "wouter";
 
@@ -82,8 +83,34 @@ export default function Dashboard() {
     return "hsl(0, 60%, 55%)";
   };
 
+  const downloadPdf = async () => {
+    const API_BASE = "__PORT_5000__".startsWith("__") ? "" : "__PORT_5000__";
+    const res = await fetch(`${API_BASE}/api/export/pdf`);
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "fund_scoring_report.pdf";
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
   return (
     <div className="p-4 lg:p-6 space-y-6 max-w-[1600px]">
+      {/* Header with PDF button */}
+      <div className="flex items-center justify-between">
+        <div />
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={downloadPdf}
+          className="text-xs gap-1.5"
+        >
+          <FileText className="w-3.5 h-3.5" />
+          Generate Report
+        </Button>
+      </div>
+
       {/* KPI Cards */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
         <KpiCard

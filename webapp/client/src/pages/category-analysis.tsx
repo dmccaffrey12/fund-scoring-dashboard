@@ -6,7 +6,8 @@ import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell,
 } from "recharts";
 import { useRoute, useLocation, Link } from "wouter";
-import { Hash, TrendingUp, TrendingDown, Activity } from "lucide-react";
+import { Hash, TrendingUp, TrendingDown, Activity, FileText } from "lucide-react";
+import { Button } from "@/components/ui/button";
 import type { Fund } from "@shared/schema";
 
 function ScoreBadge({ score, band }: { score: number; band: string }) {
@@ -45,11 +46,37 @@ export default function CategoryAnalysis() {
     return "hsl(0, 60%, 55%)";
   };
 
+  const downloadCategoryPdf = async () => {
+    if (!selectedCategory) return;
+    const API_BASE = "__PORT_5000__".startsWith("__") ? "" : "__PORT_5000__";
+    const res = await fetch(`${API_BASE}/api/export/pdf?categories=${encodeURIComponent(selectedCategory)}`);
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `fund_report_${selectedCategory.replace(/\s+/g, "_")}.pdf`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
   return (
     <div className="p-4 lg:p-6 space-y-4 max-w-[1600px]">
-      <div>
-        <h2 className="text-lg font-bold">Category Analysis</h2>
-        <p className="text-xs text-muted-foreground">Score distribution and rankings within categories</p>
+      <div className="flex items-center justify-between">
+        <div>
+          <h2 className="text-lg font-bold">Category Analysis</h2>
+          <p className="text-xs text-muted-foreground">Score distribution and rankings within categories</p>
+        </div>
+        {selectedCategory && (
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={downloadCategoryPdf}
+            className="text-xs gap-1.5"
+          >
+            <FileText className="w-3.5 h-3.5" />
+            Export Category Report
+          </Button>
+        )}
       </div>
 
       {/* Category Selector */}

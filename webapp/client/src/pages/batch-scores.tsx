@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useState, useMemo } from "react";
-import { Download, Search, ArrowUpDown, Filter } from "lucide-react";
+import { Download, Search, ArrowUpDown, Filter, FileText } from "lucide-react";
 import type { Fund } from "@shared/schema";
 import { Link } from "wouter";
 
@@ -93,6 +93,18 @@ export default function BatchScores() {
     URL.revokeObjectURL(url);
   };
 
+  const downloadPdf = async () => {
+    const API_BASE = "__PORT_5000__".startsWith("__") ? "" : "__PORT_5000__";
+    const res = await fetch(`${API_BASE}/api/export/pdf`);
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "fund_scoring_report.pdf";
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
   const SortHeader = ({ field, label, className }: { field: typeof sortField; label: string; className?: string }) => (
     <th
       className={`px-3 py-2 text-left text-[10px] uppercase tracking-wider font-semibold text-muted-foreground cursor-pointer hover:text-foreground select-none ${className || ""}`}
@@ -114,16 +126,27 @@ export default function BatchScores() {
           <h2 className="text-lg font-bold">Batch Scores</h2>
           <p className="text-xs text-muted-foreground">{filtered.length.toLocaleString()} funds displayed</p>
         </div>
-        <Button
-          variant="outline"
-          size="sm"
-          onClick={exportCSV}
-          className="text-xs gap-1.5"
-          data-testid="button-export-csv"
-        >
-          <Download className="w-3.5 h-3.5" />
-          Export CSV
-        </Button>
+        <div className="flex items-center gap-2">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={downloadPdf}
+            className="text-xs gap-1.5"
+          >
+            <FileText className="w-3.5 h-3.5" />
+            Generate Report
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={exportCSV}
+            className="text-xs gap-1.5"
+            data-testid="button-export-csv"
+          >
+            <Download className="w-3.5 h-3.5" />
+            Export CSV
+          </Button>
+        </div>
       </div>
 
       {/* Filters */}

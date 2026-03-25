@@ -51,6 +51,19 @@ export const monitoringHoldings = sqliteTable("monitoring_holdings", {
   addedAt: text("added_at").notNull(),
 });
 
+// Score snapshots — historical score tracking
+export const scoreSnapshots = sqliteTable("score_snapshots", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  snapshotDate: text("snapshot_date").notNull(), // ISO date string
+  snapshotLabel: text("snapshot_label"), // e.g., "March 2026", "Q1 2026"
+  symbol: text("symbol").notNull(),
+  score: real("score"),
+  scoreBand: text("score_band"),
+  categoryName: text("category_name"),
+  isIndexFund: integer("is_index_fund", { mode: "boolean" }).default(false),
+  uploadBatchId: integer("upload_batch_id"),
+});
+
 // Upload batches
 export const uploadBatches = sqliteTable("upload_batches", {
   id: integer("id").primaryKey({ autoIncrement: true }),
@@ -62,6 +75,7 @@ export const uploadBatches = sqliteTable("upload_batches", {
 // Insert schemas
 export const insertFundSchema = createInsertSchema(funds).omit({ id: true });
 export const insertMonitoringSchema = createInsertSchema(monitoringHoldings).omit({ id: true });
+export const insertScoreSnapshotSchema = createInsertSchema(scoreSnapshots).omit({ id: true });
 export const insertUploadBatchSchema = createInsertSchema(uploadBatches).omit({ id: true });
 
 // Types
@@ -69,5 +83,7 @@ export type Fund = typeof funds.$inferSelect;
 export type InsertFund = z.infer<typeof insertFundSchema>;
 export type MonitoringHolding = typeof monitoringHoldings.$inferSelect;
 export type InsertMonitoringHolding = z.infer<typeof insertMonitoringSchema>;
+export type ScoreSnapshot = typeof scoreSnapshots.$inferSelect;
+export type InsertScoreSnapshot = z.infer<typeof insertScoreSnapshotSchema>;
 export type UploadBatch = typeof uploadBatches.$inferSelect;
 export type InsertUploadBatch = z.infer<typeof insertUploadBatchSchema>;

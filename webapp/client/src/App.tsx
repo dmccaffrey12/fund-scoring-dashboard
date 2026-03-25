@@ -10,6 +10,7 @@ import Dashboard from "@/pages/dashboard";
 import BatchScores from "@/pages/batch-scores";
 import FundLookup from "@/pages/fund-lookup";
 import CategoryAnalysis from "@/pages/category-analysis";
+import History from "@/pages/history";
 import Monitoring from "@/pages/monitoring";
 import CsvUpload from "@/pages/csv-upload";
 import NotFound from "@/pages/not-found";
@@ -57,6 +58,7 @@ function AppRouter() {
       <Route path="/lookup/:symbol" component={FundLookup} />
       <Route path="/categories" component={CategoryAnalysis} />
       <Route path="/categories/:name" component={CategoryAnalysis} />
+      <Route path="/history" component={History} />
       <Route path="/monitoring" component={Monitoring} />
       <Route path="/upload" component={CsvUpload} />
       <Route component={NotFound} />

@@ -2,6 +2,7 @@ import type { Express } from "express";
 import { createServer, type Server } from "http";
 import { storage } from "./storage";
 import { scoreAllFunds, getFundBreakdown } from "./scoring";
+import { generatePdfReport } from "./pdf-report";
 import multer from "multer";
 import Papa from "papaparse";
 import fs from "fs";
@@ -307,6 +308,12 @@ export async function registerRoutes(
       // Cleanup temp file
       fs.unlinkSync(req.file.path);
 
+      // Auto-create snapshot after scoring
+      const snapshotDate = new Date().toISOString().split("T")[0];
+      const now = new Date();
+      const snapshotLabel = now.toLocaleDateString("en-US", { month: "long", year: "numeric" });
+      storage.createSnapshot(snapshotDate, snapshotLabel);
+
       res.json({
         success: true,
         batchId: batch.id,
@@ -321,6 +328,37 @@ export async function registerRoutes(
   app.get("/api/upload/preview", upload.single("file"), (req, res) => {
     // Just return upload batch history
     res.json(storage.getUploadBatches());
+  });
+
+  // ============ SNAPSHOTS / HISTORY ============
+  app.post("/api/snapshots", (req, res) => {
+    const label = req.body?.label || new Date().toLocaleDateString("en-US", { month: "long", year: "numeric" });
+    const date = new Date().toISOString().split("T")[0];
+    const result = storage.createSnapshot(date, label);
+    res.json(result);
+  });
+
+  app.get("/api/snapshots", (_req, res) => {
+    res.json(storage.getSnapshots());
+  });
+
+  app.get("/api/snapshots/compare", (req, res) => {
+    const from = req.query.from as string;
+    const to = req.query.to as string;
+    if (!from || !to) return res.status(400).json({ error: "from and to query params required" });
+    res.json(storage.getSnapshotComparison(from, to));
+  });
+
+  app.get("/api/snapshots/:date", (req, res) => {
+    const date = req.params.date;
+    const scores = storage.getSnapshotScores(date);
+    if (scores.length === 0) return res.status(404).json({ error: "Snapshot not found" });
+    res.json(scores);
+  });
+
+  app.get("/api/history/:symbol", (req, res) => {
+    const symbol = req.params.symbol.toUpperCase();
+    res.json(storage.getFundHistory(symbol));
   });
 
   // ============ EXPORT ============
@@ -340,6 +378,21 @@ export async function registerRoutes(
     res.setHeader("Content-Type", "text/csv");
     res.setHeader("Content-Disposition", "attachment; filename=fund_scores.csv");
     res.send(csv);
+  });
+
+  // PDF export
+  app.get("/api/export/pdf", (_req, res) => {
+    const categoriesParam = _req.query.categories as string | undefined;
+    const categoryFilter = categoriesParam ? categoriesParam.split(",").map(c => c.trim()) : undefined;
+
+    const allFunds = storage.getAllFunds().filter(f => f.score !== null);
+    const stats = storage.getFundStats();
+
+    const pdfBuffer = generatePdfReport(allFunds, stats, categoryFilter);
+
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader("Content-Disposition", "attachment; filename=fund_scoring_report.pdf");
+    res.send(pdfBuffer);
   });
 
   return httpServer;
