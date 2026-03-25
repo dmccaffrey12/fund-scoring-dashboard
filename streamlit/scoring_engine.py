@@ -279,3 +279,25 @@ def get_metric_percentiles(scored_df: pd.DataFrame, symbol: str) -> dict:
         result[col] = round(pct * 100, 1)
 
     return result
+
+# ---------------------------------------------------------------------------
+# 2023 Combined System: 15 metrics totalling 100 points (all funds scored together)
+# ---------------------------------------------------------------------------
+
+SYSTEM_2023_METRICS = [
+    ('ret_5y',     'Annualized 5 Year Total Returns (Monthly)',  9, 'higher'),
+    ('ret_10y',    'Annualized 10 Year Total Returns (Monthly)', 9, 'higher'),
+    ('alpha_5y',   'Alpha (vs Category) (5Y)',                   11, 'higher'),
+    ('alpha_10y',  'Alpha (vs Category) (10Y)',                  11, 'higher'),
+    ('maxdd_5y',   'Max Drawdown (5Y)',                          10, 'lower'),
+    ('maxdd_10y',  'Max Drawdown (10Y)',                         10, 'lower'),
+    ('up_5y',      'Upside (5Y)',                                 5, 'higher'),
+    ('up_10y',     'Upside (10Y)',                                6, 'higher'),
+    ('dn_5y',      'Downside (5Y)',                               7, 'lower'),
+    ('dn_10y',     'Downside (10Y)',                              7, 'lower'),
+    ('med_tenure',  'Median Manager Tenure',                     3, 'higher'),
+    ('avg_tenure',  'Average Manager Tenure',                    3, 'higher'),
+    ('sc_aum',      'Share Class Assets Under Management',       2.5, 'higher'),
+    ('total_aum',   'Total Assets Under Management',             1.5, 'higher'),
+    ('expense',     'Annual Report Expense Ratio',               5, 'lower'),
+]

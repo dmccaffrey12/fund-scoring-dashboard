@@ -465,93 +465,384 @@ def explain_score(scored_df: pd.DataFrame, symbol: str) -> dict:
     }
 
 
+
 def explain_score_difference(
-    scored_df_2023: pd.DataFrame,
-    scored_df_2025: pd.DataFrame,
+    df_2023: pd.DataFrame,
+    df_2025: pd.DataFrame,
     symbol: str,
 ) -> dict:
     """
-    Compare the same fund's score across two different scoring system snapshots.
-    Returns a narrative explaining the difference.
+    Compare the same fund's score between the 2023 Combined System and the 2025 Split System.
+    Returns a detailed narrative explaining what changed and why.
+
+    Parameters
+    ----------
+    df_2023 : DataFrame from scores_2023.csv (has Score_2023 column)
+    df_2025 : scored DataFrame from load_and_score() (has Score_Final, Fund_Type)
+    symbol  : ticker symbol to look up
     """
     sym_col = CSV_COLUMNS["symbol"]
     name_col = CSV_COLUMNS["name"]
 
-    row_2023 = scored_df_2023[scored_df_2023[sym_col] == symbol]
-    row_2025 = scored_df_2025[scored_df_2025[sym_col] == symbol]
+    # ---- Locate fund in each dataset ----
+    row_2023 = df_2023[df_2023["Symbol"] == symbol]
+    row_2025 = df_2025[df_2025[sym_col] == symbol]
 
     if row_2023.empty and row_2025.empty:
         return {"error": f"Symbol '{symbol}' not found in either dataset."}
 
-    score_2023 = row_2023.iloc[0].get("Score_Final") if not row_2023.empty else None
-    score_2025 = row_2025.iloc[0].get("Score_Final") if not row_2025.empty else None
+    score_2023 = float(row_2023.iloc[0]["Score_2023"]) if not row_2023.empty else None
+    score_2025 = float(row_2025.iloc[0]["Score_Final"]) if not row_2025.empty else None
     fund_type_2025 = row_2025.iloc[0].get("Fund_Type", "Unknown") if not row_2025.empty else "Unknown"
-    name = row_2025.iloc[0].get(name_col, symbol) if not row_2025.empty else symbol
 
-    s2023_str = f"{score_2023:.1f}" if score_2023 is not None and pd.notna(score_2023) else "N/A"
-    s2025_str = f"{score_2025:.1f}" if score_2025 is not None and pd.notna(score_2025) else "N/A"
+    # Name from whichever dataset has it
+    if not row_2025.empty:
+        name = row_2025.iloc[0].get(name_col, symbol)
+    elif not row_2023.empty:
+        name = row_2023.iloc[0].get("Name", symbol)
+    else:
+        name = symbol
 
-    if score_2023 is not None and score_2025 is not None and pd.notna(score_2023) and pd.notna(score_2025):
+    s2023_str = f"{score_2023:.1f}" if score_2023 is not None else "N/A"
+    s2025_str = f"{score_2025:.1f}" if score_2025 is not None else "N/A"
+
+    # ---- Score change narrative ----
+    if score_2023 is not None and score_2025 is not None:
         delta = score_2025 - score_2023
-        direction = "improved" if delta > 0 else "declined"
+        direction_word = "improved" if delta > 0 else "declined"
         delta_str = f"{abs(delta):.1f}"
-        summary = (
-            f"{symbol} scored {s2023_str} in the earlier dataset vs. {s2025_str} in the current "
-            f"dataset ({fund_type_2025}). The {delta_str}-point {direction} may reflect both "
-            f"changes in fund fundamentals and differences in the scoring methodology."
+        system_label_2025 = f"2025 ({fund_type_2025} System)"
+        header = (
+            f"{symbol} scored {s2023_str} in the 2023 Combined System "
+            f"and {s2025_str} in the {system_label_2025}."
+        )
+        change_summary = (
+            f"The {delta_str}-point {direction_word} reflects a combination of "
+            f"methodology changes and shifts in the fund's underlying metrics."
         )
     else:
-        summary = (
-            f"{symbol} ({name}): Earlier score = {s2023_str}, Current score = {s2025_str}."
+        header = f"{symbol} ({name}): 2023 score = {s2023_str}, 2025 score = {s2025_str}."
+        change_summary = ""
+        delta = None
+
+    # ---- Methodology difference explanation ----
+    methodology_note = (
+        "The 2023 system scored all funds (passive and active) together using 15 metrics. "
+        "It valued alpha (22% combined weight for 5Y+10Y), manager tenure (6% combined), "
+        "and total AUM (1.5%) — none of which exist in the 2025 system. "
+        f"The 2025 {fund_type_2025} system instead uses "
+    )
+    if fund_type_2025 == "Active":
+        methodology_note += (
+            "Information Ratio (20% combined weight across 3Y/5Y/10Y) and Sortino Ratio "
+            "(20% combined) as its core skill metrics, with expense ratio weighted at 25% "
+            "(vs 5% in 2023). Alpha, manager tenure, and total AUM were removed entirely."
+        )
+    elif fund_type_2025 == "Passive":
+        methodology_note += (
+            "expense ratio as its dominant metric (40% weight), tracking error (30% combined "
+            "across 3Y/5Y/10Y), and R-squared (5%). Alpha, manager tenure, and total AUM "
+            "were removed entirely. Information ratio and Sortino ratio are not used for passive funds."
+        )
+    else:
+        methodology_note += (
+            "different metrics and weights depending on fund type. "
+            "Alpha, manager tenure, and total AUM were removed."
         )
 
-    system_change_note = (
-        "Important: these two scores were produced by different scoring systems. "
-        "The earlier system may have used different metrics, weights, and peer groups. "
-        "The current 2025 system weights expense ratio at 25% (active) or 40% (passive), "
-        "and emphasizes information ratio and Sortino ratio for active funds. "
-        "Score differences may reflect methodology changes rather than fund deterioration or improvement."
-    )
+    # ---- 2023-only metric contributions ----
+    metrics_2023_only = []
+    if not row_2023.empty:
+        r23 = row_2023.iloc[0]
 
-    # Identify metric overlap between the two datasets
-    active_metric_keys = {k for k, _, _ in ACTIVE_METRICS}
-    passive_metric_keys = {k for k, _, _ in PASSIVE_METRICS}
-    all_metric_keys = active_metric_keys | passive_metric_keys
+        # Alpha contribution
+        alpha_5y = r23.get("Alpha (vs Category) (5Y)")
+        alpha_10y = r23.get("Alpha (vs Category) (10Y)")
+        if pd.notna(alpha_5y) or pd.notna(alpha_10y):
+            # Estimate percentile from the full 2023 dataset
+            alpha_contrib_pts = 0.0
+            alpha_notes = []
+            for col_name, weight in [("Alpha (vs Category) (5Y)", 11), ("Alpha (vs Category) (10Y)", 11)]:
+                val = r23.get(col_name)
+                if pd.notna(val):
+                    cat = r23.get("Category Name", "")
+                    cat_peers = df_2023[df_2023["Category Name"] == cat][col_name].dropna()
+                    if len(cat_peers) > 0:
+                        pct = (cat_peers <= val).sum() / len(cat_peers)
+                        contrib = pct * weight
+                        alpha_contrib_pts += contrib
+                        period = "5Y" if "5Y" in col_name else "10Y"
+                        alpha_notes.append(
+                            f"Alpha ({period}) of {val:.2f} ranks in the {round(pct*100)}th percentile "
+                            f"(~{contrib:.1f} pts of {weight} max)"
+                        )
+            metrics_2023_only.append({
+                "metric": "Alpha (5Y + 10Y)",
+                "weight_2023": 22,
+                "weight_2025": 0,
+                "contribution_2023": round(alpha_contrib_pts, 1),
+                "note": (
+                    f"Alpha contributed approximately {alpha_contrib_pts:.1f} points in 2023 "
+                    f"({'; '.join(alpha_notes)}). "
+                    f"This metric was removed in the 2025 system — the 2025 active system "
+                    f"uses Information Ratio instead, which measures consistency of excess returns "
+                    f"relative to the benchmark on a risk-adjusted basis."
+                ),
+            })
 
-    metric_overlap = []
+        # Manager tenure
+        med_ten = r23.get("Median Manager Tenure")
+        avg_ten = r23.get("Average Manager Tenure")
+        if pd.notna(med_ten) or pd.notna(avg_ten):
+            ten_contrib_pts = 0.0
+            ten_notes = []
+            for col_name, weight in [("Median Manager Tenure", 3), ("Average Manager Tenure", 3)]:
+                val = r23.get(col_name)
+                if pd.notna(val):
+                    cat = r23.get("Category Name", "")
+                    cat_peers = df_2023[df_2023["Category Name"] == cat][col_name].dropna()
+                    if len(cat_peers) > 0:
+                        pct = (cat_peers <= val).sum() / len(cat_peers)
+                        contrib = pct * weight
+                        ten_contrib_pts += contrib
+                        label = "Median" if "Median" in col_name else "Average"
+                        ten_notes.append(
+                            f"{label} tenure of {val:.1f} yrs → {round(pct*100)}th percentile "
+                            f"(~{contrib:.1f} pts)"
+                        )
+            metrics_2023_only.append({
+                "metric": "Manager Tenure (Median + Average)",
+                "weight_2023": 6,
+                "weight_2025": 0,
+                "contribution_2023": round(ten_contrib_pts, 1),
+                "note": (
+                    f"Manager tenure contributed approximately {ten_contrib_pts:.1f} points in 2023 "
+                    f"({'; '.join(ten_notes)}). "
+                    f"This metric was removed in the 2025 system — research has not consistently "
+                    f"supported tenure as a predictor of forward returns."
+                ),
+            })
+
+    # ---- 2025-only metric contributions ----
+    metrics_2025_only = []
+    if not row_2025.empty and fund_type_2025 == "Active":
+        r25 = row_2025.iloc[0]
+        cat_2025 = r25.get(CSV_COLUMNS["category"], "")
+        cat_df_2025 = df_2025[df_2025[CSV_COLUMNS["category"]] == cat_2025]
+
+        # Information Ratio (3Y + 5Y + 10Y = 20 pts total)
+        ir_contrib = 0.0
+        ir_notes = []
+        for key, weight in [("info_ratio_3y", 10), ("info_ratio_5y", 6), ("info_ratio_10y", 4)]:
+            col = CSV_COLUMNS.get(key)
+            val = r25.get(col) if col else None
+            if val is not None and pd.notna(val):
+                peers = cat_df_2025[col].dropna()
+                if len(peers) > 0:
+                    pct = (peers <= val).sum() / len(peers)
+                    contrib = pct * weight
+                    ir_contrib += contrib
+                    period = key.split("_")[-1].upper()
+                    ir_notes.append(
+                        f"IR ({period}) {val:.2f} → {round(pct*100)}th pctile (~{contrib:.1f} pts)"
+                    )
+        if ir_contrib > 0 or ir_notes:
+            metrics_2025_only.append({
+                "metric": "Information Ratio (3Y + 5Y + 10Y)",
+                "weight_2023": 0,
+                "weight_2025": 20,
+                "contribution_2025": round(ir_contrib, 1),
+                "note": (
+                    f"Information Ratio contributes up to 20 points in the 2025 active system "
+                    f"({'; '.join(ir_notes) if ir_notes else 'data unavailable'}). "
+                    f"This metric didn't exist in the 2023 system. It measures how consistently "
+                    f"the fund delivers excess returns relative to its benchmark."
+                ),
+            })
+
+        # Sortino Ratio (3Y + 5Y + 10Y = 20 pts total)
+        so_contrib = 0.0
+        so_notes = []
+        for key, weight in [("sortino_3y", 10), ("sortino_5y", 6), ("sortino_10y", 4)]:
+            col = CSV_COLUMNS.get(key)
+            val = r25.get(col) if col else None
+            if val is not None and pd.notna(val):
+                peers = cat_df_2025[col].dropna()
+                if len(peers) > 0:
+                    pct = (peers <= val).sum() / len(peers)
+                    contrib = pct * weight
+                    so_contrib += contrib
+                    period = key.split("_")[-1].upper()
+                    so_notes.append(
+                        f"Sortino ({period}) {val:.2f} → {round(pct*100)}th pctile (~{contrib:.1f} pts)"
+                    )
+        if so_contrib > 0 or so_notes:
+            metrics_2025_only.append({
+                "metric": "Sortino Ratio (3Y + 5Y + 10Y)",
+                "weight_2023": 0,
+                "weight_2025": 20,
+                "contribution_2025": round(so_contrib, 1),
+                "note": (
+                    f"Sortino Ratio contributes up to 20 points in the 2025 active system "
+                    f"({'; '.join(so_notes) if so_notes else 'data unavailable'}). "
+                    f"This metric didn't exist in the 2023 system. It measures risk-adjusted "
+                    f"returns penalizing only downside volatility."
+                ),
+            })
+
+    # ---- Expense ratio comparison ----
+    expense_note = None
+    if not row_2023.empty and not row_2025.empty:
+        er_2023 = row_2023.iloc[0].get("Annual Report Expense Ratio")
+        er_col_2025 = CSV_COLUMNS.get("expense_ratio")
+        er_2025 = row_2025.iloc[0].get(er_col_2025) if er_col_2025 else None
+
+        if er_2023 is not None and pd.notna(er_2023):
+            er_pct = er_2023 * 100 if er_2023 < 1 else er_2023  # handle if stored as decimal or percent
+            # Normalize: if > 1 it's already in percent
+            if er_2023 >= 1:
+                er_display = f"{er_2023:.2f}%"
+            else:
+                er_display = f"{er_2023*100:.3f}%"
+
+            old_weight = 5
+            new_weight = 25 if fund_type_2025 == "Active" else 40
+            expense_note = (
+                f"Expense ratio weight increased from {old_weight}% (2023) to {new_weight}% (2025 {fund_type_2025}). "
+                f"The fund's expense ratio ({er_display}) has a much larger impact on the 2025 score."
+            )
+
+    # ---- Shared metrics comparison ----
+    shared_metrics = []
     if not row_2023.empty and not row_2025.empty:
         r23 = row_2023.iloc[0]
         r25 = row_2025.iloc[0]
-        for key in sorted(all_metric_keys):
-            col = CSV_COLUMNS.get(key, key)
-            v23 = r23.get(col) if col in scored_df_2023.columns else None
-            v25 = r25.get(col) if col in scored_df_2025.columns else None
+        cat_2023 = r23.get("Category Name", "")
+        cat_2025 = r25.get(CSV_COLUMNS["category"], "")
+
+        # Drawdown overlap
+        for col_23, col_25, label in [
+            ("Max Drawdown (5Y)", CSV_COLUMNS.get("max_drawdown_5y"), "Max Drawdown (5Y)"),
+            ("Max Drawdown (10Y)", CSV_COLUMNS.get("max_drawdown_10y"), "Max Drawdown (10Y)"),
+        ]:
+            if col_25 is None:
+                continue
+            v23 = r23.get(col_23)
+            v25 = r25.get(col_25)
             if v23 is not None and v25 is not None and pd.notna(v23) and pd.notna(v25):
-                change = v25 - v23
-                metric_overlap.append({
-                    "metric": METRIC_LABELS.get(key, key),
-                    "earlier_value": round(float(v23), 4),
-                    "current_value": round(float(v25), 4),
-                    "change": round(float(change), 4),
+                # Percentile in 2023
+                peers_23 = df_2023[df_2023["Category Name"] == cat_2023][col_23].dropna()
+                pct_23 = (peers_23 >= v23).sum() / len(peers_23) * 100 if len(peers_23) > 0 else None
+                # Percentile in 2025
+                peers_25 = df_2025[df_2025[CSV_COLUMNS["category"]] == cat_2025][col_25].dropna()
+                pct_25 = (peers_25 >= v25).sum() / len(peers_25) * 100 if len(peers_25) > 0 else None
+                shared_metrics.append({
+                    "metric": label,
+                    "value_2023": round(float(v23), 4),
+                    "value_2025": round(float(v25), 4),
+                    "percentile_2023": round(pct_23, 1) if pct_23 is not None else None,
+                    "percentile_2025": round(pct_25, 1) if pct_25 is not None else None,
                 })
 
-    # Build likely drivers narrative
-    likely_drivers = [
-        "The scoring methodology differs between the two datasets — different metrics may be included or excluded.",
-        "Expense ratio weighting is substantial (25-40%) in the current system; any fee changes will have outsized impact.",
-        "Information ratio and Sortino ratio are core to the current active system — periods of underperformance relative to benchmark will show up strongly.",
-        "If the fund's peer group composition changed (category reassignment), percentile rankings would shift even if raw metrics stayed the same.",
-    ]
+        # Upside/Downside capture overlap
+        for col_23, col_25, label, direction in [
+            ("Upside (5Y)", CSV_COLUMNS.get("upside_5y"), "Upside Capture (5Y)", "higher"),
+            ("Upside (10Y)", CSV_COLUMNS.get("upside_10y"), "Upside Capture (10Y)", "higher"),
+            ("Downside (5Y)", CSV_COLUMNS.get("downside_5y"), "Downside Capture (5Y)", "lower"),
+            ("Downside (10Y)", CSV_COLUMNS.get("downside_10y"), "Downside Capture (10Y)", "lower"),
+        ]:
+            if col_25 is None:
+                continue
+            v23 = r23.get(col_23)
+            v25 = r25.get(col_25)
+            if v23 is not None and v25 is not None and pd.notna(v23) and pd.notna(v25):
+                peers_23 = df_2023[df_2023["Category Name"] == cat_2023][col_23].dropna()
+                if direction == "higher":
+                    pct_23 = (peers_23 <= v23).sum() / len(peers_23) * 100 if len(peers_23) > 0 else None
+                else:
+                    pct_23 = (peers_23 >= v23).sum() / len(peers_23) * 100 if len(peers_23) > 0 else None
+                peers_25 = df_2025[df_2025[CSV_COLUMNS["category"]] == cat_2025][col_25].dropna()
+                if direction == "higher":
+                    pct_25 = (peers_25 <= v25).sum() / len(peers_25) * 100 if len(peers_25) > 0 else None
+                else:
+                    pct_25 = (peers_25 >= v25).sum() / len(peers_25) * 100 if len(peers_25) > 0 else None
+                shared_metrics.append({
+                    "metric": label,
+                    "value_2023": round(float(v23), 4),
+                    "value_2025": round(float(v25), 4),
+                    "percentile_2023": round(pct_23, 1) if pct_23 is not None else None,
+                    "percentile_2025": round(pct_25, 1) if pct_25 is not None else None,
+                })
+
+    # ---- Net narrative ----
+    net_narrative_parts = []
+    if delta is not None:
+        direction_label = "decline" if delta < 0 else "improvement"
+        net_narrative_parts.append(
+            f"The {abs(delta):.1f}-point {direction_label} from {s2023_str} to {s2025_str} "
+            f"is primarily explained by:"
+        )
+
+    drivers = []
+    # Alpha removal
+    alpha_entry = next((m for m in metrics_2023_only if "Alpha" in m["metric"]), None)
+    if alpha_entry and alpha_entry["contribution_2023"] > 0:
+        drivers.append(
+            f"The removal of alpha from the scoring system, which contributed "
+            f"~{alpha_entry['contribution_2023']:.1f} points in 2023"
+        )
+
+    # Expense ratio reweighting
+    if expense_note:
+        drivers.append(expense_note)
+
+    # IR and Sortino additions
+    ir_entry = next((m for m in metrics_2025_only if "Information Ratio" in m["metric"]), None)
+    so_entry = next((m for m in metrics_2025_only if "Sortino" in m["metric"]), None)
+    if ir_entry or so_entry:
+        ir_pts = ir_entry["contribution_2025"] if ir_entry else 0
+        so_pts = so_entry["contribution_2025"] if so_entry else 0
+        drivers.append(
+            f"The addition of Information Ratio (~{ir_pts:.1f} pts earned) and Sortino Ratio "
+            f"(~{so_pts:.1f} pts earned) — new metrics in the 2025 system that didn't exist in 2023"
+        )
+
+    # Tenure removal
+    ten_entry = next((m for m in metrics_2023_only if "Tenure" in m["metric"]), None)
+    if ten_entry and ten_entry["contribution_2023"] > 0:
+        drivers.append(
+            f"The removal of manager tenure, which had contributed "
+            f"~{ten_entry['contribution_2023']:.1f} points in 2023"
+        )
+
+    net_narrative = " ".join(net_narrative_parts)
+    if drivers:
+        for i, d in enumerate(drivers, 1):
+            d_clean = d.rstrip(".")
+            net_narrative += f"\n({i}) {d_clean}."
 
     return {
         "symbol": symbol,
         "name": name,
+        "fund_type_2025": fund_type_2025,
+        "score_2023": score_2023,
+        "score_2025": score_2025,
+        "delta": round(delta, 1) if delta is not None else None,
+        # Alias fields for backward compatibility
         "score_earlier": score_2023,
         "score_current": score_2025,
-        "summary": summary,
-        "system_change_note": system_change_note,
-        "likely_drivers": likely_drivers,
-        "metric_overlap": metric_overlap,
+        "header": header,
+        "summary": header + (" " + change_summary if change_summary else ""),
+        "methodology_note": methodology_note,
+        "metrics_2023_only": metrics_2023_only,
+        "metrics_2025_only": metrics_2025_only,
+        "expense_note": expense_note,
+        "shared_metrics": shared_metrics,
+        "net_narrative": net_narrative,
+        # Legacy fields
+        "system_change_note": methodology_note,
+        "likely_drivers": drivers,
+        "metric_overlap": shared_metrics,
     }
 
 
