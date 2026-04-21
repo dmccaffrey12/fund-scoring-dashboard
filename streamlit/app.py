@@ -520,7 +520,7 @@ if page == "Dashboard":
             movers_all["2025 Score"] = movers_all["2025 Score"].round(1)
             movers_all["Change"] = movers_all["Change"].round(1)
             st.dataframe(
-                movers_all.style.applymap(style_change_col, subset=["Change"]),
+                movers_all.style.map(style_change_col, subset=["Change"]),
                 use_container_width=True,
                 hide_index=True,
                 height=420,
@@ -723,11 +723,11 @@ elif page == "Batch Scores":
     if "Score_2023" in table.columns:
         style_cols.append("Score_2023")
 
-    styler = table.style.applymap(style_score_col, subset=["Score 2025"])
+    styler = table.style.map(style_score_col, subset=["Score 2025"])
     if "Score_2023" in table.columns:
-        styler = styler.applymap(style_score_col, subset=["Score_2023"])
+        styler = styler.map(style_score_col, subset=["Score_2023"])
     if "Change" in table.columns:
-        styler = styler.applymap(style_change_col, subset=["Change"])
+        styler = styler.map(style_change_col, subset=["Change"])
 
     st.dataframe(
         styler,
@@ -1220,10 +1220,10 @@ elif page == "Category Analysis":
 
     st.dataframe(
         ranked.style
-              .applymap(lambda v: "color: #4ade80; font-weight:700" if isinstance(v, (int, float)) and v >= 80 else
+              .map(lambda v: "color: #4ade80; font-weight:700" if isinstance(v, (int, float)) and v >= 80 else
                                   ("color: #fbbf24; font-weight:700" if isinstance(v, (int, float)) and v >= 60 else
                                    ("color: #f87171" if isinstance(v, (int, float)) else "")), subset=["Score"])
-              .applymap(style_band, subset=["Band"]),
+              .map(style_band, subset=["Band"]),
         use_container_width=True,
         height=480,
     )
@@ -1581,8 +1581,8 @@ elif page == "2023 vs 2025 Comparison":
         improvers["Score_2025"] = improvers["Score_2025"].round(1)
         improvers["Change"] = improvers["Change"].round(1)
         st.dataframe(
-            improvers.style.applymap(style_change_col, subset=["Change"])
-                           .applymap(style_score_col, subset=["Score_2025"]),
+            improvers.style.map(style_change_col, subset=["Change"])
+                           .map(style_score_col, subset=["Score_2025"]),
             use_container_width=True,
             hide_index=True,
             height=560,
@@ -1597,8 +1597,8 @@ elif page == "2023 vs 2025 Comparison":
         decliners["Score_2025"] = decliners["Score_2025"].round(1)
         decliners["Change"] = decliners["Change"].round(1)
         st.dataframe(
-            decliners.style.applymap(style_change_col, subset=["Change"])
-                           .applymap(style_score_col, subset=["Score_2025"]),
+            decliners.style.map(style_change_col, subset=["Change"])
+                           .map(style_score_col, subset=["Score_2025"]),
             use_container_width=True,
             hide_index=True,
             height=560,
@@ -2010,7 +2010,7 @@ elif page == "History":
 
                     top_movers = changes_df.dropna(subset=["Change"]).head(30)
                     st.dataframe(
-                        top_movers.style.applymap(style_change_col, subset=["Change"]),
+                        top_movers.style.map(style_change_col, subset=["Change"]),
                         use_container_width=True,
                         height=460,
                         hide_index=True,
