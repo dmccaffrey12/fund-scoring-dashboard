@@ -1,0 +1,368 @@
+---
+title: "Monthly Fund Review — Committee Packet"
+subtitle: "Dual-Lens Scoring (Performance 2023 + Quality/Risk 2025)"
+author: "Investment Committee"
+date: today
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    toc-location: left
+    number-sections: true
+    theme: cosmo
+    code-fold: true
+    code-tools: false
+    embed-resources: true
+    fig-width: 9
+    fig-height: 5
+    page-layout: full
+    grid:
+      body-width: 1100px
+execute:
+  echo: false
+  warning: false
+  message: false
+jupyter: python3
+---
+
+```{python}
+#| tags: [setup]
+import os
+import sys
+from pathlib import Path
+import pandas as pd
+import numpy as np
+
+REPO_ROOT = Path(__file__).resolve().parent.parent.parent if "__file__" in globals() else Path.cwd().parent.parent
+STREAMLIT_DIR = REPO_ROOT / "streamlit"
+SAMPLE_PATH = STREAMLIT_DIR / "sample_data.csv"
+SCORES_2023_PATH = STREAMLIT_DIR / "scores_2023.csv"
+
+# Allow importing the scoring engine shipped with the Streamlit app
+sys.path.insert(0, str(STREAMLIT_DIR))
+from scoring_engine import load_and_score, get_score_band  # noqa: E402
+
+TOP_N = 50
+```
+
+```{python}
+#| tags: [load-data]
+data_available = {
+    "sample_2025": SAMPLE_PATH.exists(),
+    "scores_2023": SCORES_2023_PATH.exists(),
+}
+
+scored_2025 = None
+scores_2023 = None
+load_errors = []
+
+if data_available["sample_2025"]:
+    try:
+        scored_2025 = load_and_score(str(SAMPLE_PATH))
+    except Exception as exc:
+        load_errors.append(f"sample_data.csv failed to score: {exc}")
+
+if data_available["scores_2023"]:
+    try:
+        scores_2023 = pd.read_csv(SCORES_2023_PATH)
+    except Exception as exc:
+        load_errors.append(f"scores_2023.csv failed to load: {exc}")
+
+def _clean(df: pd.DataFrame) -> pd.DataFrame:
+    return df.copy() if df is not None else df
+
+scored_2025 = _clean(scored_2025)
+scores_2023 = _clean(scores_2023)
+
+can_join = (
+    scored_2025 is not None
+    and scores_2023 is not None
+    and "Symbol" in scored_2025.columns
+    and "Symbol" in scores_2023.columns
+)
+
+joined = None
+if can_join:
+    left = scored_2025[[
+        "Symbol", "Name", "Category Name", "Fund_Type",
+        "Score_Final", "Score_Band",
+    ]].rename(columns={"Score_Final": "Score_2025", "Score_Band": "Band_2025"})
+    right = scores_2023[["Symbol", "Score_2023"]]
+    joined = left.merge(right, on="Symbol", how="inner")
+    joined["Band_2023"] = joined["Score_2023"].apply(get_score_band)
+    joined["Consensus"] = (joined["Score_2025"] + joined["Score_2023"]) / 2.0
+```
+
+# Executive Summary
+
+```{python}
+from IPython.display import Markdown
+
+bullets = []
+
+if scored_2025 is not None:
+    total = len(scored_2025)
+    strong = int((scored_2025["Score_Band"] == "STRONG").sum())
+    review = int((scored_2025["Score_Band"] == "REVIEW").sum())
+    weak = int((scored_2025["Score_Band"] == "WEAK").sum())
+    pct_strong = strong / total * 100 if total else 0
+    bullets.append(
+        f"**2025 Quality/Risk Lens** — {total:,} funds scored. "
+        f"🟢 {strong:,} STRONG ({pct_strong:.1f}%) · 🟡 {review:,} REVIEW · 🔴 {weak:,} WEAK."
+    )
+    avg = scored_2025["Score_Final"].mean()
+    bullets.append(f"Average 2025 score across universe: **{avg:.1f} / 100**.")
+
+if scores_2023 is not None:
+    total23 = scores_2023["Score_2023"].notna().sum()
+    avg23 = scores_2023["Score_2023"].mean()
+    bullets.append(
+        f"**2023 Performance Lens** — {int(total23):,} funds scored, "
+        f"average **{avg23:.1f} / 100**."
+    )
+
+if joined is not None:
+    bullets.append(
+        f"**Consensus universe** — {len(joined):,} funds appear in both scoring systems and are eligible for dual-lens review."
+    )
+    top_consensus = joined.nlargest(5, "Consensus")[["Symbol", "Name", "Consensus"]]
+    names = ", ".join(f"{r.Symbol} ({r.Consensus:.1f})" for r in top_consensus.itertuples())
+    bullets.append(f"Top 5 consensus leaders this cycle: {names}.")
+
+if not bullets:
+    bullets.append("⚠️ No input data was found — see *Methodology Notes* for required files.")
+
+Markdown("\n\n".join(f"- {b}" for b in bullets))
+```
+
+::: {.callout-note}
+This packet is a **prototype**. It is generated from the repo's bundled sample
+data (YCharts export snapshot shipped in `streamlit/`). For production review,
+drop a fresh YCharts export in place of `streamlit/sample_data.csv` and re-render.
+:::
+
+# Top 50 Consensus Ideas
+
+```{python}
+#| tags: [consensus]
+if joined is None:
+    Markdown(
+        "> ⚠️ **Consensus view unavailable.** Either the 2023 or 2025 score "
+        "data was not found, or the two files do not share a `Symbol` "
+        "column. See *Methodology Notes* for the expected schema."
+    )
+else:
+    top = (
+        joined.sort_values("Consensus", ascending=False)
+        .head(TOP_N)
+        .reset_index(drop=True)
+    )
+    top.index = top.index + 1
+    top.index.name = "Rank"
+    view = top[[
+        "Symbol", "Name", "Category Name", "Fund_Type",
+        "Score_2023", "Score_2025", "Consensus", "Band_2025",
+    ]].copy()
+    view["Score_2023"] = view["Score_2023"].round(1)
+    view["Score_2025"] = view["Score_2025"].round(1)
+    view["Consensus"] = view["Consensus"].round(1)
+    view
+```
+
+Consensus rank = simple average of the 2023 performance score and the 2025
+quality/risk score. Funds that rank in the top of **both** lenses sit at the
+top — these are the most durable ideas for committee review.
+
+# Top 50 by Performance Lens (2023)
+
+```{python}
+#| tags: [perf-2023]
+if scores_2023 is None:
+    Markdown("> ⚠️ 2023 score file missing — performance lens unavailable.")
+else:
+    df = scores_2023.dropna(subset=["Score_2023"]).copy()
+    df = df.sort_values("Score_2023", ascending=False).head(TOP_N).reset_index(drop=True)
+    df.index = df.index + 1
+    df.index.name = "Rank"
+    cols = ["Symbol", "Name", "Category Name", "Score_2023"]
+    if "Share_Class_Flag" in df.columns:
+        cols.append("Share_Class_Flag")
+    view = df[cols].copy()
+    view["Score_2023"] = view["Score_2023"].round(1)
+    view
+```
+
+The 2023 methodology emphasises **realised outcomes** — trailing 5Y/10Y
+returns, alpha vs. category, upside/downside capture, drawdown, and manager
+tenure. It is a backwards-looking performance lens.
+
+# Top 50 by Quality/Risk Lens (2025)
+
+```{python}
+#| tags: [quality-2025]
+if scored_2025 is None:
+    Markdown("> ⚠️ 2025 sample data missing — quality/risk lens unavailable.")
+else:
+    df = scored_2025.dropna(subset=["Score_Final"]).copy()
+    df = df.sort_values("Score_Final", ascending=False).head(TOP_N).reset_index(drop=True)
+    df.index = df.index + 1
+    df.index.name = "Rank"
+    view = df[[
+        "Symbol", "Name", "Category Name", "Fund_Type",
+        "Score_Final", "Score_Band",
+    ]].rename(columns={"Score_Final": "Score_2025", "Score_Band": "Band"}).copy()
+    view["Score_2025"] = view["Score_2025"].round(1)
+    view
+```
+
+The 2025 methodology re-weights toward **information ratio, Sortino, tracking
+error, and cost** — a forward-looking *quality and risk-efficiency* lens.
+Passive funds (10-metric system) and active funds (16-metric system) are
+scored separately but placed on a common 0–100 scale via within-category
+percentile ranking.
+
+# What Changed
+
+```{python}
+#| tags: [what-changed]
+history_paths = [
+    REPO_ROOT / "streamlit" / "history.csv",
+    REPO_ROOT / "streamlit" / "score_history.csv",
+    REPO_ROOT / "data" / "history.csv",
+]
+history = None
+for p in history_paths:
+    if p.exists():
+        try:
+            history = pd.read_csv(p)
+            break
+        except Exception:
+            continue
+
+if history is not None and not history.empty:
+    Markdown(
+        f"Loaded {len(history):,} historical score rows from `{p.relative_to(REPO_ROOT)}`. "
+        "Month-over-month delta view to be added in the next iteration."
+    )
+elif joined is not None:
+    delta = joined.assign(delta=joined["Score_2025"] - joined["Score_2023"])
+    movers_up = delta.nlargest(10, "delta")[["Symbol", "Name", "Score_2023", "Score_2025", "delta"]]
+    movers_dn = delta.nsmallest(10, "delta")[["Symbol", "Name", "Score_2023", "Score_2025", "delta"]]
+    for df in (movers_up, movers_dn):
+        for c in ("Score_2023", "Score_2025", "delta"):
+            df[c] = df[c].round(1)
+    Markdown(
+        "> **Historical month-over-month tracking is not yet wired up** — no "
+        "`history.csv` was found in the repo. In the meantime, the tables "
+        "below show the largest **cross-system score deltas** "
+        "(2025 minus 2023) as a proxy for funds whose risk/quality profile "
+        "diverges most from their recent realised performance.\n\n"
+        "### Biggest positive deltas (quality > performance)\n\n"
+        + movers_up.to_markdown(index=False)
+        + "\n\n### Biggest negative deltas (performance > quality)\n\n"
+        + movers_dn.to_markdown(index=False)
+    )
+else:
+    Markdown(
+        "> ⚠️ No historical score archive was found and cross-system deltas "
+        "require both 2023 and 2025 data. Once an archive process writes "
+        "monthly snapshots to `streamlit/history.csv`, this section will "
+        "populate automatically."
+    )
+```
+
+# Dual-Lens Matrix
+
+```{python}
+#| tags: [dual-lens-matrix]
+if joined is None:
+    Markdown("> ⚠️ Dual-lens matrix unavailable — both 2023 and 2025 scores are required.")
+else:
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    fig, ax = plt.subplots(figsize=(9, 6.5))
+    ax.scatter(
+        joined["Score_2023"], joined["Score_2025"],
+        s=6, alpha=0.25, color="#1f77b4", rasterized=True,
+    )
+    top_consensus = joined.nlargest(25, "Consensus")
+    ax.scatter(
+        top_consensus["Score_2023"], top_consensus["Score_2025"],
+        s=28, color="#d62728", label="Top 25 consensus", zorder=3,
+    )
+    ax.axhline(80, color="grey", lw=0.8, ls="--")
+    ax.axvline(80, color="grey", lw=0.8, ls="--")
+    ax.axhline(60, color="grey", lw=0.5, ls=":")
+    ax.axvline(60, color="grey", lw=0.5, ls=":")
+    ax.set_xlabel("2023 Performance Score")
+    ax.set_ylabel("2025 Quality / Risk Score")
+    ax.set_title("Dual-Lens Matrix — Performance vs. Quality")
+    ax.set_xlim(0, 105)
+    ax.set_ylim(0, 115)
+    ax.legend(loc="lower right")
+    # Quadrant labels
+    ax.text(90, 95, "Consensus\nSTRONG", color="#2ca02c", ha="center", fontsize=9, alpha=0.9)
+    ax.text(30, 95, "Quality only", color="#7f7f7f", ha="center", fontsize=9, alpha=0.8)
+    ax.text(90, 25, "Performance only", color="#7f7f7f", ha="center", fontsize=9, alpha=0.8)
+    ax.text(30, 25, "Avoid / review", color="#d62728", ha="center", fontsize=9, alpha=0.8)
+    plt.tight_layout()
+    plt.show()
+```
+
+```{python}
+#| tags: [quadrant-counts]
+if joined is not None:
+    q = joined.copy()
+    q["2023_Band"] = pd.cut(
+        q["Score_2023"], bins=[-0.1, 60, 80, 200],
+        labels=["WEAK", "REVIEW", "STRONG"],
+    )
+    q["2025_Band"] = pd.cut(
+        q["Score_2025"], bins=[-0.1, 60, 80, 200],
+        labels=["WEAK", "REVIEW", "STRONG"],
+    )
+    matrix = (
+        pd.crosstab(q["2025_Band"], q["2023_Band"], dropna=False)
+        .reindex(index=["STRONG", "REVIEW", "WEAK"], columns=["WEAK", "REVIEW", "STRONG"])
+        .fillna(0).astype(int)
+    )
+    matrix
+```
+
+Rows = 2025 Quality / Risk band. Columns = 2023 Performance band.
+**Top-right cell** = STRONG on both lenses — the committee's highest-conviction bucket.
+
+# Methodology Notes
+
+## Data Inputs
+
+| File | Purpose | Provided? |
+|------|---------|-----------|
+| `streamlit/sample_data.csv` | YCharts export — 2025 Quality/Risk scoring | ✅ bundled |
+| `streamlit/scores_2023.csv` | Pre-computed 2023 Performance scores | ✅ bundled |
+| `streamlit/history.csv` *(optional)* | Monthly score archive for MoM deltas | ❌ not yet wired |
+
+## Scoring Systems
+
+- **2023 Performance Lens** — 16 peer-relative metrics (returns, alpha, upside / downside capture, drawdown, manager tenure, expense ratio, AUM). Pre-scored in `scores_2023.csv`.
+- **2025 Quality / Risk Lens** — 10-metric passive system + 16-metric active system, computed live from the YCharts export by `streamlit/scoring_engine.py::load_and_score`.
+- **Consensus** = simple mean of the two scores (only defined where both exist).
+- **Bands** — `STRONG ≥ 80`, `REVIEW ∈ [60, 80)`, `WEAK < 60`.
+
+## Known Limitations
+
+1. **No share-class dedup.** The 2025 file scores every share class; the 2023 file ships with an `Avail_Weight` / `Share_Class_Flag` pair that is not yet honoured here.
+2. **No history / MoM delta.** The *What Changed* section falls back to a cross-system delta proxy until an archive job writes `history.csv`.
+3. **Consensus is unweighted.** A production packet should probably weight 2025 higher (it reflects current risk profile) and down-weight funds with short track records.
+4. **Top-50 tables are not manager-filtered.** In production these should be filtered to the firm's approved / model-portfolio universe before committee review.
+
+## Render
+
+See `reports/monthly_packet/README.md` for dependencies and the `make packet`
+render command.
+
+---
+
+*Generated by Quarto · prototype · `reports/monthly_packet/monthly_packet.qmd`*
