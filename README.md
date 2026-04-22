@@ -64,6 +64,11 @@ python run_archive.py create \
     --path-2025 /path/to/ycharts_export.csv \
     --path-2023 /path/to/scores_2023.csv
 
+# `--path-2023` accepts either a pre-scored file (with a `Score_2023` column)
+# OR a raw YCharts 2023 export — in the latter case `Score_2023` is computed
+# on the fly using the same 15-metric weighting defined in
+# `scoring_engine.SYSTEM_2023_METRICS`.
+
 # Inspect available runs
 python run_archive.py list
 python run_archive.py show --latest
