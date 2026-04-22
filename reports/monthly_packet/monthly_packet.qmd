@@ -30,266 +30,350 @@ jupyter: python3
 import os
 import sys
 from pathlib import Path
-import pandas as pd
+
 import numpy as np
+import pandas as pd
 
-REPO_ROOT = Path(__file__).resolve().parent.parent.parent if "__file__" in globals() else Path.cwd().parent.parent
-STREAMLIT_DIR = REPO_ROOT / "streamlit"
-SAMPLE_PATH = STREAMLIT_DIR / "sample_data.csv"
-SCORES_2023_PATH = STREAMLIT_DIR / "scores_2023.csv"
+HERE = Path(__file__).resolve().parent if "__file__" in globals() else Path.cwd()
+if str(HERE) not in sys.path:
+    sys.path.insert(0, str(HERE))
 
-# Allow importing the scoring engine shipped with the Streamlit app
-sys.path.insert(0, str(STREAMLIT_DIR))
-from scoring_engine import load_and_score, get_score_band  # noqa: E402
+from packet_data import (  # noqa: E402
+    load_packet_inputs,
+    top_by_score,
+    top_by_consensus,
+    disagreement_list,
+    dual_lens_matrix,
+    quadrant_counts,
+    metadata_banner,
+)
 
 TOP_N = 50
+DISAGREEMENT_GAP = 10.0
+
+# Explicit override hooks for the render script:
+#   FUND_PACKET_RUN_PATH  — absolute path to a run directory
+#   FUND_PACKET_RUN_DATE  — YYYY-MM-DD, looked up under FUND_PACKET_RUNS_DIR
+#   FUND_PACKET_RUNS_DIR  — parent dir (defaults to streamlit/runs)
+inputs = load_packet_inputs(
+    run_path=os.environ.get("FUND_PACKET_RUN_PATH"),
+    run_date=os.environ.get("FUND_PACKET_RUN_DATE"),
+    runs_dir=os.environ.get("FUND_PACKET_RUNS_DIR"),
+)
+
+table = inputs.dual_score_table
+metadata = inputs.metadata
+validation = inputs.validation or {}
+intake = inputs.intake
+comparison = inputs.comparison
+banner = metadata_banner(metadata)
 ```
 
 ```{python}
-#| tags: [load-data]
-data_available = {
-    "sample_2025": SAMPLE_PATH.exists(),
-    "scores_2023": SCORES_2023_PATH.exists(),
-}
+#| tags: [banner]
+from IPython.display import Markdown
 
-scored_2025 = None
-scores_2023 = None
-load_errors = []
-
-if data_available["sample_2025"]:
-    try:
-        scored_2025 = load_and_score(str(SAMPLE_PATH))
-    except Exception as exc:
-        load_errors.append(f"sample_data.csv failed to score: {exc}")
-
-if data_available["scores_2023"]:
-    try:
-        scores_2023 = pd.read_csv(SCORES_2023_PATH)
-    except Exception as exc:
-        load_errors.append(f"scores_2023.csv failed to load: {exc}")
-
-def _clean(df: pd.DataFrame) -> pd.DataFrame:
-    return df.copy() if df is not None else df
-
-scored_2025 = _clean(scored_2025)
-scores_2023 = _clean(scores_2023)
-
-can_join = (
-    scored_2025 is not None
-    and scores_2023 is not None
-    and "Symbol" in scored_2025.columns
-    and "Symbol" in scores_2023.columns
-)
-
-joined = None
-if can_join:
-    left = scored_2025[[
-        "Symbol", "Name", "Category Name", "Fund_Type",
-        "Score_Final", "Score_Band",
-    ]].rename(columns={"Score_Final": "Score_2025", "Score_Band": "Band_2025"})
-    right = scores_2023[["Symbol", "Score_2023"]]
-    joined = left.merge(right, on="Symbol", how="inner")
-    joined["Band_2023"] = joined["Score_2023"].apply(get_score_band)
-    joined["Consensus"] = (joined["Score_2025"] + joined["Score_2023"]) / 2.0
+lines = [
+    f"**Run date:** {banner['run_date']}",
+    f"**Score system:** {banner['score_system']}",
+    f"**2025 input:** `{banner['input_2025']}`  ·  **2023 input:** `{banner['input_2023']}`",
+    f"**Generated:** {banner['generated_at']}",
+    f"**Archive:** `{os.path.relpath(inputs.run_path, Path.cwd())}`",
+]
+if banner["notes"]:
+    lines.append(f"**Notes:** {banner['notes']}")
+Markdown("  \n".join(lines))
 ```
 
 # Executive Summary
 
 ```{python}
-from IPython.display import Markdown
-
+#| tags: [exec-summary]
 bullets = []
 
-if scored_2025 is not None:
-    total = len(scored_2025)
-    strong = int((scored_2025["Score_Band"] == "STRONG").sum())
-    review = int((scored_2025["Score_Band"] == "REVIEW").sum())
-    weak = int((scored_2025["Score_Band"] == "WEAK").sum())
-    pct_strong = strong / total * 100 if total else 0
-    bullets.append(
-        f"**2025 Quality/Risk Lens** — {total:,} funds scored. "
-        f"🟢 {strong:,} STRONG ({pct_strong:.1f}%) · 🟡 {review:,} REVIEW · 🔴 {weak:,} WEAK."
-    )
-    avg = scored_2025["Score_Final"].mean()
-    bullets.append(f"Average 2025 score across universe: **{avg:.1f} / 100**.")
+total = int(len(table))
+bullets.append(f"**Universe:** {total:,} funds in the dual-score table.")
 
-if scores_2023 is not None:
-    total23 = scores_2023["Score_2023"].notna().sum()
-    avg23 = scores_2023["Score_2023"].mean()
-    bullets.append(
-        f"**2023 Performance Lens** — {int(total23):,} funds scored, "
-        f"average **{avg23:.1f} / 100**."
+band_counts_25 = validation.get("band_counts_2025") or (
+    table["Score_Band_2025"].value_counts(dropna=False).to_dict()
+    if "Score_Band_2025" in table.columns else {}
+)
+band_counts_23 = validation.get("band_counts_2023") or (
+    table["Score_Band_2023"].value_counts(dropna=False).to_dict()
+    if "Score_Band_2023" in table.columns else {}
+)
+
+def _band_summary(counts, label):
+    if not counts:
+        return None
+    strong = int(counts.get("STRONG", 0))
+    review = int(counts.get("REVIEW", 0))
+    weak = int(counts.get("WEAK", 0))
+    total = strong + review + weak
+    pct = strong / total * 100 if total else 0
+    return (
+        f"**{label}:** {total:,} scored — "
+        f"🟢 {strong:,} STRONG ({pct:.1f}%) · 🟡 {review:,} REVIEW · 🔴 {weak:,} WEAK."
     )
 
-if joined is not None:
-    bullets.append(
-        f"**Consensus universe** — {len(joined):,} funds appear in both scoring systems and are eligible for dual-lens review."
-    )
-    top_consensus = joined.nlargest(5, "Consensus")[["Symbol", "Name", "Consensus"]]
-    names = ", ".join(f"{r.Symbol} ({r.Consensus:.1f})" for r in top_consensus.itertuples())
-    bullets.append(f"Top 5 consensus leaders this cycle: {names}.")
+for msg in filter(None, [
+    _band_summary(band_counts_25, "2025 Quality/Risk Lens"),
+    _band_summary(band_counts_23, "2023 Performance Lens"),
+]):
+    bullets.append(msg)
 
-if not bullets:
-    bullets.append("⚠️ No input data was found — see *Methodology Notes* for required files.")
+joined_count = validation.get("joined_count")
+if joined_count is None and {"Score_2023_Final", "Score_2025_Final"}.issubset(table.columns):
+    joined_count = int(table[["Score_2023_Final", "Score_2025_Final"]].notna().all(axis=1).sum())
+if joined_count is not None:
+    bullets.append(f"**Both-lens coverage:** {joined_count:,} funds have scores in both systems.")
+
+quad_counts = quadrant_counts(table)
+if not quad_counts.empty:
+    parts = [f"{q}: {n:,}" for q, n in quad_counts.items()]
+    bullets.append("**Quadrant mix:** " + " · ".join(parts))
+
+top5 = top_by_consensus(table, top_n=5)
+if not top5.empty and "Symbol" in top5.columns:
+    tickers = ", ".join(top5["Symbol"].astype(str).tolist())
+    bullets.append(f"**Top 5 consensus ideas this cycle:** {tickers}.")
+
+if comparison is not None:
+    s = comparison.summary
+    bullets.append(
+        f"**Month-over-month:** comparing **{s.get('latest_run_date')}** against "
+        f"**{s.get('prior_run_date')}** — "
+        f"{int(s.get('new_fund_count', 0)):,} new, "
+        f"{int(s.get('removed_fund_count', 0)):,} removed, "
+        f"{int(s.get('quadrant_change_count', 0)):,} quadrant changes."
+    )
+else:
+    bullets.append("_No prior-run comparison found — see **What Changed** for the placeholder._")
 
 Markdown("\n\n".join(f"- {b}" for b in bullets))
 ```
 
-::: {.callout-note}
-This packet is a **prototype**. It is generated from the repo's bundled sample
-data (YCharts export snapshot shipped in `streamlit/`). For production review,
-drop a fresh YCharts export in place of `streamlit/sample_data.csv` and re-render.
-:::
+# Data Quality & Preflight
+
+```{python}
+#| tags: [data-quality]
+rows = []
+
+if validation:
+    rows.append(("Row count", validation.get("row_count")))
+    rows.append(("Joined (both scores)", validation.get("joined_count")))
+    rows.append(("Missing Score_2023_Final", validation.get("missing_score_2023")))
+    rows.append(("Missing Score_2025_Final", validation.get("missing_score_2025")))
+
+    for key, label in [
+        ("score_2023", "2023 score"),
+        ("score_2025", "2025 score"),
+        ("score_gap", "Score gap (2025 − 2023)"),
+    ]:
+        s = validation.get(key) or {}
+        if s.get("min") is not None:
+            rows.append((
+                f"{label} range",
+                f"min {s['min']:.1f} · mean {s['mean']:.1f} · max {s['max']:.1f} · missing {s.get('missing', 0):,}",
+            ))
+    for key, label in [("coverage_2023", "Data coverage 2023"), ("coverage_2025", "Data coverage 2025")]:
+        s = validation.get(key) or {}
+        if s.get("mean") is not None:
+            rows.append((label, f"mean {s['mean']:.2f} · min {s['min']:.2f} · missing {s.get('missing', 0):,}"))
+else:
+    rows.append(("Validation report", "not available"))
+
+qa_df = pd.DataFrame(rows, columns=["Metric", "Value"])
+qa_df
+```
+
+```{python}
+#| tags: [intake]
+def _collect_intake_findings(report):
+    """Flatten findings from report_2025 / report_2023 / join_findings."""
+    if not report:
+        return []
+    items = []
+    for src_key in ("report_2025", "report_2023"):
+        sub = report.get(src_key) or {}
+        for f in sub.get("findings") or []:
+            items.append({**f, "source": src_key.replace("report_", "")})
+    for f in report.get("join_findings") or []:
+        items.append({**f, "source": "join"})
+    return items
+
+
+if intake is None:
+    Markdown(
+        "_No `intake_report.json` in this run — YCharts preflight was not run. "
+        "Re-archive with `python streamlit/run_archive.py create ... --preflight warn` "
+        "to capture intake findings alongside the next packet._"
+    )
+else:
+    failed = intake.get("failed")
+    counts = intake.get("finding_counts") or {}
+    findings = _collect_intake_findings(intake)
+
+    by_severity = {}
+    for f in findings:
+        sev = f.get("severity", "info")
+        by_severity.setdefault(sev, []).append(f)
+
+    header = "🔴 Preflight **FAILED**" if failed else "🟢 Preflight passed"
+    summary_parts = []
+    for sev in ("error", "warning", "info"):
+        n = int(counts.get(sev, 0))
+        if n:
+            summary_parts.append(f"{sev}: {n}")
+    summary_line = " · ".join(summary_parts) if summary_parts else "no findings"
+
+    blocks = [f"{header} — {summary_line}", ""]
+    for sev in ("error", "warning", "info"):
+        items = by_severity.get(sev, [])
+        if not items:
+            continue
+        blocks.append(f"**{sev.capitalize()} ({len(items)})**")
+        for f in items[:15]:
+            code = f.get("code") or f.get("check") or "?"
+            msg = f.get("message", "")
+            src = f.get("source", "")
+            tag = f"{src}:{code}" if src else code
+            blocks.append(f"- `{tag}` — {msg}")
+        if len(items) > 15:
+            blocks.append(f"- _+{len(items) - 15} more…_")
+        blocks.append("")
+    if not findings:
+        blocks.append("_No findings recorded._")
+    Markdown("\n".join(blocks))
+```
 
 # Top 50 Consensus Ideas
 
 ```{python}
 #| tags: [consensus]
-if joined is None:
-    Markdown(
-        "> ⚠️ **Consensus view unavailable.** Either the 2023 or 2025 score "
-        "data was not found, or the two files do not share a `Symbol` "
-        "column. See *Methodology Notes* for the expected schema."
-    )
+top = top_by_consensus(table, top_n=TOP_N)
+if top.empty:
+    Markdown("> ⚠️ Consensus view unavailable — need `Consensus_Rank` or both score columns.")
 else:
-    top = (
-        joined.sort_values("Consensus", ascending=False)
-        .head(TOP_N)
-        .reset_index(drop=True)
-    )
-    top.index = top.index + 1
-    top.index.name = "Rank"
-    view = top[[
-        "Symbol", "Name", "Category Name", "Fund_Type",
-        "Score_2023", "Score_2025", "Consensus", "Band_2025",
-    ]].copy()
-    view["Score_2023"] = view["Score_2023"].round(1)
-    view["Score_2025"] = view["Score_2025"].round(1)
-    view["Consensus"] = view["Consensus"].round(1)
+    cols = [c for c in [
+        "Symbol", "Name", "Category", "Fund_Type",
+        "Score_2023_Final", "Score_2025_Final", "Consensus_Rank",
+        "Score_Band_2023", "Score_Band_2025", "Action_Flag",
+    ] if c in top.columns]
+    view = top[cols].copy()
+    for c in ("Score_2023_Final", "Score_2025_Final"):
+        if c in view.columns:
+            view[c] = view[c].round(1)
     view
 ```
 
-Consensus rank = simple average of the 2023 performance score and the 2025
-quality/risk score. Funds that rank in the top of **both** lenses sit at the
-top — these are the most durable ideas for committee review.
+Consensus rank = dense rank on the average of the per-lens ranks. Top of the
+list = durable ideas that rank well on **both** the realised-performance lens
+and the forward-looking quality/risk lens.
 
 # Top 50 by Performance Lens (2023)
 
 ```{python}
 #| tags: [perf-2023]
-if scores_2023 is None:
-    Markdown("> ⚠️ 2023 score file missing — performance lens unavailable.")
+top23 = top_by_score(table, "Score_2023_Final", top_n=TOP_N)
+if top23.empty:
+    Markdown("> ⚠️ 2023 scores missing — performance lens unavailable.")
 else:
-    df = scores_2023.dropna(subset=["Score_2023"]).copy()
-    df = df.sort_values("Score_2023", ascending=False).head(TOP_N).reset_index(drop=True)
-    df.index = df.index + 1
-    df.index.name = "Rank"
-    cols = ["Symbol", "Name", "Category Name", "Score_2023"]
-    if "Share_Class_Flag" in df.columns:
-        cols.append("Share_Class_Flag")
-    view = df[cols].copy()
-    view["Score_2023"] = view["Score_2023"].round(1)
+    cols = [c for c in [
+        "Symbol", "Name", "Category", "Fund_Type",
+        "Score_2023_Final", "Score_Band_2023", "Data_Coverage_2023",
+    ] if c in top23.columns]
+    view = top23[cols].copy()
+    if "Score_2023_Final" in view.columns:
+        view["Score_2023_Final"] = view["Score_2023_Final"].round(1)
+    if "Data_Coverage_2023" in view.columns:
+        view["Data_Coverage_2023"] = view["Data_Coverage_2023"].round(2)
     view
 ```
 
 The 2023 methodology emphasises **realised outcomes** — trailing 5Y/10Y
-returns, alpha vs. category, upside/downside capture, drawdown, and manager
-tenure. It is a backwards-looking performance lens.
+returns, alpha vs. category, upside/downside capture, drawdown, manager tenure.
+A backwards-looking performance lens.
 
 # Top 50 by Quality/Risk Lens (2025)
 
 ```{python}
 #| tags: [quality-2025]
-if scored_2025 is None:
-    Markdown("> ⚠️ 2025 sample data missing — quality/risk lens unavailable.")
+top25 = top_by_score(table, "Score_2025_Final", top_n=TOP_N)
+if top25.empty:
+    Markdown("> ⚠️ 2025 scores missing — quality/risk lens unavailable.")
 else:
-    df = scored_2025.dropna(subset=["Score_Final"]).copy()
-    df = df.sort_values("Score_Final", ascending=False).head(TOP_N).reset_index(drop=True)
-    df.index = df.index + 1
-    df.index.name = "Rank"
-    view = df[[
-        "Symbol", "Name", "Category Name", "Fund_Type",
-        "Score_Final", "Score_Band",
-    ]].rename(columns={"Score_Final": "Score_2025", "Score_Band": "Band"}).copy()
-    view["Score_2025"] = view["Score_2025"].round(1)
+    cols = [c for c in [
+        "Symbol", "Name", "Category", "Fund_Type",
+        "Score_2025_Final", "Score_Band_2025", "Data_Coverage_2025",
+    ] if c in top25.columns]
+    view = top25[cols].copy()
+    if "Score_2025_Final" in view.columns:
+        view["Score_2025_Final"] = view["Score_2025_Final"].round(1)
+    if "Data_Coverage_2025" in view.columns:
+        view["Data_Coverage_2025"] = view["Data_Coverage_2025"].round(2)
     view
 ```
 
-The 2025 methodology re-weights toward **information ratio, Sortino, tracking
-error, and cost** — a forward-looking *quality and risk-efficiency* lens.
-Passive funds (10-metric system) and active funds (16-metric system) are
-scored separately but placed on a common 0–100 scale via within-category
-percentile ranking.
+The 2025 methodology re-weights toward **information ratio, Sortino,
+tracking error, and cost** — a forward-looking *quality and risk-efficiency*
+lens. Passive and active funds are scored by their own metric panels but
+placed on a common 0–100 scale via within-category percentile ranking.
 
-# What Changed
+# Disagreement List
 
 ```{python}
-#| tags: [what-changed]
-history_paths = [
-    REPO_ROOT / "streamlit" / "history.csv",
-    REPO_ROOT / "streamlit" / "score_history.csv",
-    REPO_ROOT / "data" / "history.csv",
-]
-history = None
-for p in history_paths:
-    if p.exists():
-        try:
-            history = pd.read_csv(p)
-            break
-        except Exception:
-            continue
-
-if history is not None and not history.empty:
+#| tags: [disagreements]
+disagree = disagreement_list(table, min_gap=DISAGREEMENT_GAP)
+if disagree.empty:
     Markdown(
-        f"Loaded {len(history):,} historical score rows from `{p.relative_to(REPO_ROOT)}`. "
-        "Month-over-month delta view to be added in the next iteration."
-    )
-elif joined is not None:
-    delta = joined.assign(delta=joined["Score_2025"] - joined["Score_2023"])
-    movers_up = delta.nlargest(10, "delta")[["Symbol", "Name", "Score_2023", "Score_2025", "delta"]]
-    movers_dn = delta.nsmallest(10, "delta")[["Symbol", "Name", "Score_2023", "Score_2025", "delta"]]
-    for df in (movers_up, movers_dn):
-        for c in ("Score_2023", "Score_2025", "delta"):
-            df[c] = df[c].round(1)
-    Markdown(
-        "> **Historical month-over-month tracking is not yet wired up** — no "
-        "`history.csv` was found in the repo. In the meantime, the tables "
-        "below show the largest **cross-system score deltas** "
-        "(2025 minus 2023) as a proxy for funds whose risk/quality profile "
-        "diverges most from their recent realised performance.\n\n"
-        "### Biggest positive deltas (quality > performance)\n\n"
-        + movers_up.to_markdown(index=False)
-        + "\n\n### Biggest negative deltas (performance > quality)\n\n"
-        + movers_dn.to_markdown(index=False)
+        f"> No funds meet the disagreement threshold "
+        f"(|Score_Gap| ≥ {DISAGREEMENT_GAP:.0f} or differing bands)."
     )
 else:
-    Markdown(
-        "> ⚠️ No historical score archive was found and cross-system deltas "
-        "require both 2023 and 2025 data. Once an archive process writes "
-        "monthly snapshots to `streamlit/history.csv`, this section will "
-        "populate automatically."
-    )
+    cols = [c for c in [
+        "Symbol", "Name", "Category", "Fund_Type",
+        "Score_2023_Final", "Score_2025_Final", "Score_Gap",
+        "Score_Band_2023", "Score_Band_2025", "Quadrant",
+        "Primary_Driver", "Action_Flag",
+    ] if c in disagree.columns]
+    view = disagree[cols].head(100).copy()
+    for c in ("Score_2023_Final", "Score_2025_Final", "Score_Gap"):
+        if c in view.columns:
+            view[c] = view[c].round(1)
+    view.index = view.index + 1
+    view.index.name = "Rank"
+    view
 ```
+
+Funds where the 2023 and 2025 lenses tell materially different stories:
+either the score gap is large in absolute terms or they sit in different
+bands. These are the cases that merit the most narrative discussion —
+strong performance history paired with deteriorating risk profile, or vice
+versa.
 
 # Dual-Lens Matrix
 
 ```{python}
 #| tags: [dual-lens-matrix]
-if joined is None:
-    Markdown("> ⚠️ Dual-lens matrix unavailable — both 2023 and 2025 scores are required.")
-else:
+if {"Score_2023_Final", "Score_2025_Final"}.issubset(table.columns):
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
+    plot_df = table.dropna(subset=["Score_2023_Final", "Score_2025_Final"])
     fig, ax = plt.subplots(figsize=(9, 6.5))
     ax.scatter(
-        joined["Score_2023"], joined["Score_2025"],
+        plot_df["Score_2023_Final"], plot_df["Score_2025_Final"],
         s=6, alpha=0.25, color="#1f77b4", rasterized=True,
     )
-    top_consensus = joined.nlargest(25, "Consensus")
+    if "Consensus_Rank" in plot_df.columns:
+        top25_plot = plot_df.nsmallest(25, "Consensus_Rank")
+    else:
+        plot_df = plot_df.assign(_consensus=(plot_df["Score_2023_Final"] + plot_df["Score_2025_Final"]) / 2)
+        top25_plot = plot_df.nlargest(25, "_consensus")
     ax.scatter(
-        top_consensus["Score_2023"], top_consensus["Score_2025"],
+        top25_plot["Score_2023_Final"], top25_plot["Score_2025_Final"],
         s=28, color="#d62728", label="Top 25 consensus", zorder=3,
     )
     ax.axhline(80, color="grey", lw=0.8, ls="--")
@@ -302,67 +386,186 @@ else:
     ax.set_xlim(0, 105)
     ax.set_ylim(0, 115)
     ax.legend(loc="lower right")
-    # Quadrant labels
     ax.text(90, 95, "Consensus\nSTRONG", color="#2ca02c", ha="center", fontsize=9, alpha=0.9)
     ax.text(30, 95, "Quality only", color="#7f7f7f", ha="center", fontsize=9, alpha=0.8)
     ax.text(90, 25, "Performance only", color="#7f7f7f", ha="center", fontsize=9, alpha=0.8)
     ax.text(30, 25, "Avoid / review", color="#d62728", ha="center", fontsize=9, alpha=0.8)
     plt.tight_layout()
     plt.show()
+else:
+    Markdown("> ⚠️ Dual-lens scatter unavailable — both score columns required.")
 ```
 
 ```{python}
-#| tags: [quadrant-counts]
-if joined is not None:
-    q = joined.copy()
-    q["2023_Band"] = pd.cut(
-        q["Score_2023"], bins=[-0.1, 60, 80, 200],
-        labels=["WEAK", "REVIEW", "STRONG"],
-    )
-    q["2025_Band"] = pd.cut(
-        q["Score_2025"], bins=[-0.1, 60, 80, 200],
-        labels=["WEAK", "REVIEW", "STRONG"],
-    )
-    matrix = (
-        pd.crosstab(q["2025_Band"], q["2023_Band"], dropna=False)
-        .reindex(index=["STRONG", "REVIEW", "WEAK"], columns=["WEAK", "REVIEW", "STRONG"])
-        .fillna(0).astype(int)
-    )
+#| tags: [dual-lens-table]
+matrix = dual_lens_matrix(table)
+if matrix.empty:
+    Markdown("> ⚠️ Band matrix unavailable — `Score_Band_2023` / `Score_Band_2025` missing.")
+else:
     matrix
 ```
 
-Rows = 2025 Quality / Risk band. Columns = 2023 Performance band.
-**Top-right cell** = STRONG on both lenses — the committee's highest-conviction bucket.
+Rows = 2025 Quality/Risk band. Columns = 2023 Performance band.
+**Top-left cell** (rows[0]=STRONG 2025 × cols[0]=STRONG 2023 after reindex:
+`STRONG / STRONG`) is the committee's highest-conviction bucket.
+
+```{python}
+#| tags: [quadrant-summary]
+if "Quadrant" in table.columns:
+    q = quadrant_counts(table).reset_index()
+    q.columns = ["Quadrant", "Count"]
+    q
+```
+
+# What Changed
+
+```{python}
+#| tags: [what-changed]
+if comparison is None:
+    Markdown(
+        "> **No prior run archive available.** Month-over-month change "
+        "tables will populate automatically once a second run exists under "
+        "`streamlit/runs/`. Create a comparison with:\n"
+        "> ```bash\n"
+        "> python streamlit/run_comparison.py compare\n"
+        "> ```"
+    )
+else:
+    s = comparison.summary
+    header = (
+        f"**Comparison window:** `{s.get('prior_run_date')}` → "
+        f"`{s.get('latest_run_date')}`  \n"
+        f"Latest universe: **{int(s.get('latest_row_count', 0)):,}** funds · "
+        f"Prior universe: **{int(s.get('prior_row_count', 0)):,}** funds."
+    )
+    Markdown(header)
+```
+
+```{python}
+#| tags: [change-headlines]
+if comparison is not None:
+    s = comparison.summary
+    rows = [
+        ("New funds", int(s.get("new_fund_count", 0))),
+        ("Removed funds", int(s.get("removed_fund_count", 0))),
+        ("Quadrant changes", int(s.get("quadrant_change_count", 0))),
+        ("Action flag changes", int(s.get("action_flag_change_count", 0))),
+    ]
+    mover_counts = s.get("score_mover_count_by_metric") or {}
+    for metric, n in sorted(mover_counts.items()):
+        rows.append((f"Movers · {metric}", int(n)))
+    band_counts = s.get("band_change_count_by_column") or {}
+    for col, n in sorted(band_counts.items()):
+        rows.append((f"Band changes · {col}", int(n)))
+    pd.DataFrame(rows, columns=["Change", "Count"])
+```
+
+```{python}
+#| tags: [score-movers]
+if comparison is not None and not comparison.score_movers.empty:
+    Markdown("## Biggest score movers")
+    mv = comparison.score_movers.copy()
+    sort_key = "Abs_Delta" if "Abs_Delta" in mv.columns else ("Delta" if "Delta" in mv.columns else None)
+    if sort_key == "Abs_Delta":
+        mv = mv.sort_values(sort_key, ascending=False)
+    elif sort_key == "Delta":
+        mv = mv.reindex(mv["Delta"].abs().sort_values(ascending=False).index)
+    mv = mv.head(25).reset_index(drop=True)
+    mv.index = mv.index + 1
+    mv.index.name = "Rank"
+    for c in ("Value_Latest", "Value_Prior", "Delta", "Abs_Delta"):
+        if c in mv.columns:
+            mv[c] = mv[c].round(2)
+    mv
+elif comparison is not None:
+    Markdown("_No score movers in this window._")
+```
+
+```{python}
+#| tags: [band-changes]
+if comparison is not None and not comparison.band_changes.empty:
+    Markdown("## Band changes")
+    comparison.band_changes.head(50).reset_index(drop=True)
+elif comparison is not None:
+    Markdown("_No band changes in this window._")
+```
+
+```{python}
+#| tags: [quadrant-changes]
+if comparison is not None and not comparison.quadrant_changes.empty:
+    Markdown("## Quadrant changes")
+    comparison.quadrant_changes.head(50).reset_index(drop=True)
+elif comparison is not None:
+    Markdown("_No quadrant changes in this window._")
+```
+
+```{python}
+#| tags: [new-removed]
+if comparison is not None:
+    cols_new = [c for c in ["Symbol", "Name", "Category", "Fund_Type"] if c in comparison.new_funds.columns]
+    cols_rm = [c for c in ["Symbol", "Name", "Category", "Fund_Type"] if c in comparison.removed_funds.columns]
+    blocks = []
+    if not comparison.new_funds.empty:
+        blocks.append("## New funds this cycle\n")
+        blocks.append(comparison.new_funds[cols_new].head(50).to_markdown(index=False))
+    if not comparison.removed_funds.empty:
+        blocks.append("## Removed funds this cycle\n")
+        blocks.append(comparison.removed_funds[cols_rm].head(50).to_markdown(index=False))
+    if blocks:
+        Markdown("\n\n".join(blocks))
+```
 
 # Methodology Notes
 
 ## Data Inputs
 
-| File | Purpose | Provided? |
-|------|---------|-----------|
-| `streamlit/sample_data.csv` | YCharts export — 2025 Quality/Risk scoring | ✅ bundled |
-| `streamlit/scores_2023.csv` | Pre-computed 2023 Performance scores | ✅ bundled |
-| `streamlit/history.csv` *(optional)* | Monthly score archive for MoM deltas | ❌ not yet wired |
+The packet is generated from a single archived run directory — the canonical
+substrate produced by `streamlit/run_archive.py`. Resolution order:
+
+1. `FUND_PACKET_RUN_PATH` env var (explicit path)
+2. `FUND_PACKET_RUN_DATE` env var under `FUND_PACKET_RUNS_DIR`
+3. `streamlit/runs/latest.json` manifest
+4. Newest dated folder under `streamlit/runs/`
+
+Artifacts consumed:
+
+| Artifact | Purpose | Required? |
+|---|---|---|
+| `data/dual_score_table.csv` | One-row-per-fund dual-score table | ✅ |
+| `metadata/run_metadata.json` | Run date, timestamp, input hashes | ✅ |
+| `validation/validation_report.json` | Row / band / quadrant counts, score ranges | Optional |
+| `validation/intake_report.json` | YCharts preflight findings | Optional |
+| `comparison/prior_<YYYY-MM-DD>/` | Month-over-month change tables | Optional |
 
 ## Scoring Systems
 
-- **2023 Performance Lens** — 16 peer-relative metrics (returns, alpha, upside / downside capture, drawdown, manager tenure, expense ratio, AUM). Pre-scored in `scores_2023.csv`.
-- **2025 Quality / Risk Lens** — 10-metric passive system + 16-metric active system, computed live from the YCharts export by `streamlit/scoring_engine.py::load_and_score`.
-- **Consensus** = simple mean of the two scores (only defined where both exist).
+- **2023 Performance Lens** — 15-metric combined panel (returns, alpha,
+  upside/downside capture, drawdown, manager tenure, expense ratio, AUM).
+  Either pre-scored or computed on the fly from a raw YCharts export by
+  `scoring_engine.score_2023_funds`.
+- **2025 Quality / Risk Lens** — 10-metric passive system + 16-metric active
+  system, computed from the YCharts export by
+  `scoring_engine.load_and_score`.
+- **Consensus rank** — dense rank on the average of the two per-lens ranks
+  (1 = best).
 - **Bands** — `STRONG ≥ 80`, `REVIEW ∈ [60, 80)`, `WEAK < 60`.
+- **Quadrants** — `Q1_Both_Strong`, `Q2_Only_2025`, `Q3_Only_2023`,
+  `Q4_Both_Weak` using the same 80 / 60 thresholds.
 
 ## Known Limitations
 
-1. **No share-class dedup.** The 2025 file scores every share class; the 2023 file ships with an `Avail_Weight` / `Share_Class_Flag` pair that is not yet honoured here.
-2. **No history / MoM delta.** The *What Changed* section falls back to a cross-system delta proxy until an archive job writes `history.csv`.
-3. **Consensus is unweighted.** A production packet should probably weight 2025 higher (it reflects current risk profile) and down-weight funds with short track records.
-4. **Top-50 tables are not manager-filtered.** In production these should be filtered to the firm's approved / model-portfolio universe before committee review.
+1. **Consensus rank is unweighted.** A production weighting may favour the
+   forward-looking 2025 lens.
+2. **Top-50 tables are universe-wide.** Filter to the firm's approved list
+   before committee distribution.
+3. **Intake preflight is optional.** If `intake_report.json` is absent the
+   Data Quality section reports only the post-scoring validation counters.
 
 ## Render
 
-See `reports/monthly_packet/README.md` for dependencies and the `make packet`
-render command.
+See `reports/monthly_packet/README.md` for dependencies and the
+`make packet` / `render.sh` / env-var overrides.
 
 ---
 
-*Generated by Quarto · prototype · `reports/monthly_packet/monthly_packet.qmd`*
+*Generated by Quarto · `reports/monthly_packet/monthly_packet.qmd`*

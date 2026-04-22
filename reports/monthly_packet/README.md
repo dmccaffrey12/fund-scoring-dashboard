@@ -1,31 +1,63 @@
-# Monthly Fund Review — Quarto Packet (Prototype)
+# Monthly Fund Review — Quarto Packet
 
-A lightweight, non-PowerBI committee packet rendered from the repo's bundled
-fund data. Produces a single self-contained HTML file suitable for emailing
-or archiving alongside the monthly review cycle.
+A single-HTML committee packet rendered from an **archived scoring run**
+(produced by `streamlit/run_archive.py`). Self-contained output suitable for
+emailing, archiving, or attaching to the monthly review cycle notes.
+
+This is the consumer side of the run-archive / dual-score-table / run-comparison
+pipeline. Nothing is computed from ad-hoc sample data — the packet always
+reflects a specific dated run directory.
 
 ## What's in the packet
 
-1. **Executive Summary** — universe size, band mix, consensus leaders.
-2. **Top 50 Consensus Ideas** — funds ranked by the average of the 2023 and 2025 scores (only present if both lenses are available).
-3. **Top 50 by Performance Lens (2023)** — backwards-looking returns / alpha / capture view.
-4. **Top 50 by Quality / Risk Lens (2025)** — current information-ratio / Sortino / tracking-error / cost view.
-5. **What Changed** — uses a historical archive if present, otherwise falls back to cross-system deltas.
-6. **Dual-Lens Matrix** — scatter + 3×3 band matrix.
-7. **Methodology Notes** — data sources, scoring systems, known limitations.
+1. **Executive Summary** — universe size, band mix, consensus leaders, MoM headline.
+2. **Data Quality & Preflight** — row/coverage/band/quadrant counts from the
+   run's `validation_report.json`; YCharts `intake_report.json` findings when present.
+3. **Top 50 Consensus Ideas** — best of both lenses by `Consensus_Rank`.
+4. **Top 50 by Performance Lens (2023)** — returns / alpha / capture view.
+5. **Top 50 by Quality/Risk Lens (2025)** — information ratio / Sortino / tracking error / cost view.
+6. **Disagreement List** — funds where the two lenses diverge by ≥ 10 points or by band.
+7. **Dual-Lens Matrix** — scatter + 3×3 band matrix + quadrant counts.
+8. **What Changed** — month-over-month movers, band / quadrant / action-flag
+   changes, new/removed funds. Falls back to a clearly-labelled placeholder when
+   no comparison bundle is present.
+9. **Methodology Notes** — data sources, scoring systems, known limitations.
 
 ## Data inputs
 
-The report reads the bundled sample files under `streamlit/`:
+The packet reads these artifacts from a single run directory:
 
-| File | Used for | Required? |
-|------|----------|-----------|
-| `streamlit/sample_data.csv` | 2025 Quality/Risk scores (live scored via `scoring_engine.py`) | Needed for 2025 / Consensus / Matrix |
-| `streamlit/scores_2023.csv` | Pre-computed 2023 Performance scores | Needed for 2023 / Consensus / Matrix |
-| `streamlit/history.csv` *(optional)* | Monthly archive for MoM deltas | Optional |
+```
+streamlit/runs/YYYY-MM-DD/
+  data/dual_score_table.csv                        (required)
+  metadata/run_metadata.json                       (required)
+  validation/validation_report.json                (optional)
+  validation/intake_report.json                    (optional — YCharts preflight)
+  comparison/prior_YYYY-MM-DD/
+    summary.json
+    score_movers.csv
+    band_changes.csv
+    quadrant_changes.csv
+    action_flag_changes.csv
+    new_funds.csv
+    removed_funds.csv                              (optional — MoM comparison)
+```
 
-If either file is missing the corresponding section falls back to a clearly
-labelled placeholder, so the packet always renders.
+Every optional file is handled gracefully — if it's missing the
+corresponding section renders a labelled placeholder.
+
+### Run resolution order
+
+The `.qmd` resolves which run to read via this waterfall:
+
+1. `FUND_PACKET_RUN_PATH` — explicit absolute path to a run directory.
+2. `FUND_PACKET_RUN_DATE` — `YYYY-MM-DD`, looked up under
+   `FUND_PACKET_RUNS_DIR` (default `streamlit/runs/`).
+3. `streamlit/runs/latest.json` manifest.
+4. Lexicographic maximum of dated folders under `streamlit/runs/`.
+
+`FUND_PACKET_RUNS_DIR` can also be exported to point at a shared-drive
+archive root (anything with the same `YYYY-MM-DD/...` layout works).
 
 ## Prerequisites
 
@@ -40,8 +72,8 @@ quarto --version
 
 ### 2. Python dependencies
 
-The report uses the Jupyter engine. Install Python deps into the same
-environment you use for the Streamlit app, plus the reporting extras:
+Install Python deps into the same environment you use for the Streamlit app,
+plus the reporting extras:
 
 ```bash
 pip install -r streamlit/requirements.txt
@@ -49,51 +81,83 @@ pip install -r reports/monthly_packet/requirements.txt
 ```
 
 `reports/monthly_packet/requirements.txt` covers `jupyter`, `matplotlib`,
-`tabulate`, and `nbformat` — the extras Quarto needs beyond the Streamlit
-app's baseline.
+`tabulate`, `nbformat` — the extras Quarto's Jupyter engine needs beyond
+the Streamlit baseline.
+
+## Creating an archive first
+
+The packet requires at least one run archive. Typical monthly flow:
+
+```bash
+cd streamlit
+
+# Create an archive from the current YCharts exports.
+python run_archive.py create \
+  --run-date 2026-04-30 \
+  --path-2025 /path/to/ycharts_2025_export.csv \
+  --path-2023 /path/to/ycharts_2023_export.csv \
+  --notes "April committee packet" \
+  --preflight warn
+
+# (Optional) compute the month-over-month comparison against the prior run.
+python run_comparison.py compare
+```
 
 ## Rendering
 
-From the **repo root**:
+### Default (resolves latest run)
 
 ```bash
 make packet
-```
-
-or directly:
-
-```bash
+# or
+bash reports/monthly_packet/render.sh
+# or
 quarto render reports/monthly_packet/monthly_packet.qmd
 ```
 
-or with the convenience script:
+### Specific run by date
 
 ```bash
-bash reports/monthly_packet/render.sh
+make packet RUN_DATE=2026-04-30
+# or
+bash reports/monthly_packet/render.sh --run-date 2026-04-30
+# or
+FUND_PACKET_RUN_DATE=2026-04-30 quarto render reports/monthly_packet/monthly_packet.qmd
 ```
 
-The output HTML lands next to the `.qmd` file:
+### Explicit absolute run path (e.g. off a shared drive)
 
-```
-reports/monthly_packet/monthly_packet.html
+```bash
+make packet RUN_PATH=/shared/fund_scoring/runs/2026-04-30
+# or
+bash reports/monthly_packet/render.sh --run-path /shared/fund_scoring/runs/2026-04-30
 ```
 
-It is a single self-contained file (`embed-resources: true`) — safe to email
-or archive.
+### Custom output location
+
+```bash
+make packet OUT=/tmp/april_packet.html
+# or
+bash reports/monthly_packet/render.sh --run-date 2026-04-30 --out /tmp/april_packet.html
+```
+
+The default output HTML lands next to the `.qmd` file
+(`reports/monthly_packet/monthly_packet.html`), gitignored and self-contained.
 
 ## Refreshing for the next cycle
 
-1. Drop the latest YCharts export over `streamlit/sample_data.csv` (same column names as the current file).
-2. If a new 2023-style score file is published, replace `streamlit/scores_2023.csv`.
-3. Re-run `make packet`.
+1. Produce a fresh run archive (`run_archive.py create ...`).
+2. Optionally compute the comparison against the prior run
+   (`run_comparison.py compare`).
+3. Re-render: `make packet`.
 
 No code changes are required for a normal month.
 
-## Known limitations (prototype)
+## Known limitations
 
-- No share-class de-duplication yet.
-- No historical MoM view — the *What Changed* section currently uses a cross-system delta proxy.
-- Consensus ranking is an unweighted average; production may want to weight the 2025 lens higher.
-- Top-50 tables are across the full universe — should be filtered to the firm's approved list before committee distribution.
-
-These are tracked in the `# Known Limitations` section of the `.qmd` itself.
+- **Consensus rank is unweighted.** A production weighting may favour the
+  forward-looking 2025 lens.
+- **Top-50 tables are universe-wide.** Filter to the firm's approved list
+  before committee distribution.
+- **Intake preflight is optional.** If `intake_report.json` is absent the
+  Data Quality section reports only the post-scoring validation counters.
