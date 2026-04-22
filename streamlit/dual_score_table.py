@@ -52,6 +52,8 @@ from scoring_engine import (
     PASSIVE_RESCALE,
     load_and_score,
     get_score_band,
+    has_raw_2023_metrics,
+    score_2023_funds,
 )
 
 
@@ -235,9 +237,16 @@ def build_dual_score_table(
     df_2023 = df_2023.copy()
 
     if "Score_2023" not in df_2023.columns:
-        raise ValueError(
-            "2023 DataFrame is missing required 'Score_2023' column."
-        )
+        # Fall back to computing Score_2023 from raw YCharts 2023 metric
+        # columns (the raw export does not include a pre-computed score).
+        if has_raw_2023_metrics(df_2023):
+            df_2023 = score_2023_funds(df_2023)
+        else:
+            raise ValueError(
+                "2023 DataFrame is missing 'Score_2023' and does not contain "
+                "enough raw 2023 metric columns to compute it. Provide a "
+                "pre-scored 2023 CSV or a raw YCharts 2023 export."
+            )
 
     df_2023["Score_Band_2023"] = df_2023["Score_2023"].apply(get_score_band)
     if "Avail_Weight" in df_2023.columns:

@@ -301,3 +301,89 @@ SYSTEM_2023_METRICS = [
     ('total_aum',   'Total Assets Under Management',             1.5, 'higher'),
     ('expense',     'Annual Report Expense Ratio',               5, 'lower'),
 ]
+
+SYSTEM_2023_TOTAL_WEIGHT = sum(w for _key, _col, w, _d in SYSTEM_2023_METRICS)
+SYSTEM_2023_CATEGORY_COL = 'Category Name'
+
+
+def score_2023_funds(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Compute the 2023 Combined System score from a raw YCharts 2023 export.
+
+    Methodology
+    -----------
+    - Within-category percentile ranks are computed for each of the 15 metrics
+      defined in ``SYSTEM_2023_METRICS`` (same direction conventions as the
+      2023 workbook: lower-is-better for Max Drawdown / Downside / Expense,
+      higher-is-better for everything else).
+    - Each row's score is the weighted mean of available percentile ranks,
+      using a pro-rated denominator — metrics with no raw data for that fund
+      do not suppress its score, exactly like ``_compute_score`` does for the
+      2025 systems.
+    - Output columns: ``Score_2023`` (0-100), ``Avail_Weight`` (0-100, the
+      share of the 100-point system backed by raw data for that row).
+
+    Parameters
+    ----------
+    df : raw 2023 YCharts export DataFrame. Must include ``Category Name``
+         plus the metric columns listed in ``SYSTEM_2023_METRICS`` (missing
+         metric columns are treated as uniformly unavailable).
+
+    Returns
+    -------
+    A copy of ``df`` with ``Score_2023`` and ``Avail_Weight`` added.
+    """
+    result = df.copy()
+
+    if SYSTEM_2023_CATEGORY_COL not in result.columns:
+        raise ValueError(
+            f"2023 DataFrame is missing required {SYSTEM_2023_CATEGORY_COL!r} "
+            "column; cannot compute within-category percentiles."
+        )
+
+    pct_cache = {}
+    for key, col, _weight, direction in SYSTEM_2023_METRICS:
+        if col in result.columns:
+            numeric = pd.to_numeric(result[col], errors='coerce')
+            tmp = result.assign(**{col: numeric})
+            pct_cache[key] = calculate_percentile(
+                tmp, col, SYSTEM_2023_CATEGORY_COL, direction,
+            )
+        else:
+            pct_cache[key] = pd.Series(np.nan, index=result.index, dtype=float)
+
+    weighted_sum = pd.Series(0.0, index=result.index)
+    available_weight = pd.Series(0.0, index=result.index)
+
+    for key, _col, weight, _direction in SYSTEM_2023_METRICS:
+        pct = pct_cache[key]
+        has_data = pct.notna()
+        weighted_sum[has_data] += pct[has_data] * weight
+        available_weight[has_data] += weight
+
+    score = pd.Series(np.nan, index=result.index, dtype=float)
+    has_any = available_weight > 0
+    score[has_any] = (weighted_sum[has_any] / available_weight[has_any]) * 100.0
+
+    result['Score_2023'] = score
+    # Avail_Weight is expressed on the 100-point scale to match scores_2023.csv.
+    result['Avail_Weight'] = (
+        available_weight / SYSTEM_2023_TOTAL_WEIGHT * 100.0
+    ).round(2)
+    return result
+
+
+def has_raw_2023_metrics(df: pd.DataFrame, min_metrics: int = 5) -> bool:
+    """
+    True if ``df`` contains at least ``min_metrics`` of the 2023 raw metric
+    columns plus the category column required to compute percentiles.
+
+    Used by ``dual_score_table`` to decide whether to compute ``Score_2023``
+    on the fly from a raw YCharts 2023 export.
+    """
+    if SYSTEM_2023_CATEGORY_COL not in df.columns:
+        return False
+    present = sum(
+        1 for _key, col, _w, _d in SYSTEM_2023_METRICS if col in df.columns
+    )
+    return present >= min_metrics
