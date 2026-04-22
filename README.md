@@ -136,6 +136,51 @@ result, _ = run_comparison(write=False)   # in-memory only
 ## Data Source
 Export CSV from YCharts Fund Screener with the required metrics. See each app's documentation for the expected column format.
 
+## YCharts Intake Validator
+
+`streamlit/ycharts_intake.py` validates raw YCharts CSV exports **before** they feed the scoring engine or a run archive. It understands both the 29-column `2025` export and the 28-column `2023` export.
+
+It checks:
+- Required columns present
+- `Symbol` column — no blanks, duplicates flagged
+- Critical numeric columns parse as numbers (errors)
+- Non-critical numeric columns parse (warnings)
+- `Index Fund` (2025 only) parses as True/False
+- Null rate per critical column vs a configurable threshold
+- Joinability by `Symbol` when both files are provided
+
+Findings carry severity `error` / `warning` / `info` and the report includes a `failed` flag (true if any error).
+
+**CLI — single file:**
+```bash
+python streamlit/ycharts_intake.py --path-2025 data/2025_export.csv
+python streamlit/ycharts_intake.py --path-2023 data/2023_export.csv
+```
+
+**CLI — both files + JSON artifact:**
+```bash
+python streamlit/ycharts_intake.py \
+    --path-2025 data/2025_export.csv \
+    --path-2023 data/2023_export.csv \
+    --json-out intake_report.json
+```
+
+Exits non-zero on failure, so it can gate a CI step.
+
+**Library — library preflight before `run_archive.create_run_archive`:**
+```python
+from ycharts_intake import preflight_for_archive
+preflight_for_archive("data/2025.csv", "data/2023.csv", strict=True)
+```
+
+**Integrated preflight (new `--preflight` flag on `run_archive create`):**
+```bash
+python streamlit/run_archive.py create \
+    --path-2025 data/2025.csv --path-2023 data/2023.csv \
+    --preflight strict
+```
+When enabled, the full intake report is persisted to `validation/intake_report.json` inside the run folder and referenced from `run_metadata.json`.
+
 ## Validation Targets
 - SCHD (Passive): ~69.6
 - OMCIX (Active): ~68.7
