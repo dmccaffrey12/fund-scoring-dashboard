@@ -234,7 +234,12 @@ def _top_n_by_score(table: pd.DataFrame, score_col: str, n: int = TOP_N) -> pd.D
     if score_col not in table.columns:
         return pd.DataFrame()
     sub = table.dropna(subset=[score_col]).copy()
-    sub = sub.sort_values(score_col, ascending=False).head(n).reset_index(drop=True)
+    # Stable sort with Symbol tie-break for deterministic Top-N ordering.
+    sort_cols = [score_col, "Symbol"] if "Symbol" in sub.columns else [score_col]
+    ascending = [False, True] if "Symbol" in sub.columns else [False]
+    sub = sub.sort_values(
+        sort_cols, ascending=ascending, kind="stable",
+    ).head(n).reset_index(drop=True)
     rank_col = f"Rank_By_{score_col}"
     sub.insert(0, rank_col, range(1, len(sub) + 1))
     return sub
@@ -244,7 +249,11 @@ def _top_n_by_consensus(table: pd.DataFrame, n: int = TOP_N) -> pd.DataFrame:
     if "Consensus_Rank" not in table.columns:
         return pd.DataFrame()
     sub = table.dropna(subset=["Consensus_Rank"]).copy()
-    sub = sub.sort_values("Consensus_Rank", ascending=True).head(n).reset_index(drop=True)
+    sort_cols = ["Consensus_Rank", "Symbol"] if "Symbol" in sub.columns else ["Consensus_Rank"]
+    ascending = [True, True] if "Symbol" in sub.columns else [True]
+    sub = sub.sort_values(
+        sort_cols, ascending=ascending, kind="stable",
+    ).head(n).reset_index(drop=True)
     return sub
 
 
@@ -261,9 +270,12 @@ def _disagreement_list(table: pd.DataFrame) -> pd.DataFrame:
         band_mask = df["Score_Band_2023"].fillna("") != df["Score_Band_2025"].fillna("")
     picked = df[gap_mask | band_mask].copy()
     if "Score_Gap" in picked.columns:
-        picked = picked.reindex(
-            picked["Score_Gap"].abs().sort_values(ascending=False).index
-        )
+        picked["_abs_gap"] = picked["Score_Gap"].abs()
+        sort_cols = ["_abs_gap", "Symbol"] if "Symbol" in picked.columns else ["_abs_gap"]
+        ascending = [False, True] if "Symbol" in picked.columns else [False]
+        picked = picked.sort_values(
+            sort_cols, ascending=ascending, kind="stable",
+        ).drop(columns="_abs_gap")
     return picked.reset_index(drop=True)
 
 

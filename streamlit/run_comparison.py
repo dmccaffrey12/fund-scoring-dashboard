@@ -183,11 +183,16 @@ def _score_movers(
     movers = movers.sort_values(
         ["Metric", "Abs_Delta", "Symbol"],
         ascending=[True, False, True],
+        kind="stable",
     ).reset_index(drop=True)
 
     if top_n is not None and top_n > 0:
         movers = (
-            movers.sort_values(["Metric", "Abs_Delta"], ascending=[True, False])
+            movers.sort_values(
+                ["Metric", "Abs_Delta", "Symbol"],
+                ascending=[True, False, True],
+                kind="stable",
+            )
             .groupby("Metric", as_index=False)
             .head(top_n)
             .reset_index(drop=True)
@@ -230,7 +235,9 @@ def _transition_table(
 
     trans = pd.concat(records, ignore_index=True)
     trans = trans.merge(metadata, on="Symbol", how="left")
-    return trans.sort_values(["Column", "Symbol"]).reset_index(drop=True)
+    return trans.sort_values(
+        ["Column", "Symbol"], kind="stable",
+    ).reset_index(drop=True)
 
 
 def _single_sided(
@@ -260,7 +267,7 @@ def _single_sided(
         src = f"{col}{suffix}"
         if src in sub.columns:
             out[col] = sub[src].values
-    return out.sort_values("Symbol").reset_index(drop=True)
+    return out.sort_values("Symbol", kind="stable").reset_index(drop=True)
 
 
 def _summary(

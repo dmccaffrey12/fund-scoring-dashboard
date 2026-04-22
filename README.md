@@ -39,6 +39,26 @@ All metrics are ranked within Morningstar categories (Large Growth vs Large Grow
 ### Pro-Rating for Missing Data
 Funds with partial history are scored on available metrics only — the denominator adjusts so newer funds aren't penalized.
 
+### Deterministic Output
+Two runs built from the same inputs are guaranteed to produce byte-identical
+dual-score tables — same rows, same column order, same values — so the
+month-over-month comparison is empty when nothing has actually changed.
+Concretely:
+
+- Within-category percentile ranks are computed with pure pandas groupby +
+  vectorised compares (no random or environment-dependent state).
+- All output sorts use `kind="stable"` and an explicit `Symbol` tie-break
+  so ties in `Consensus_Rank`, `Score_Final`, or Top-N score don't reorder
+  between runs.
+- YCharts occasionally lists the same ticker under two Morningstar
+  categories (mid-period reclassifications, share-class quirks). The
+  dual-score table collapses those to a single row per `Symbol` by taking
+  the best-scoring duplicate on each side — deterministically, via a
+  stable sort on score (desc), category (asc), and original row index.
+  Duplicate `Symbol` values are forbidden in the one-row-per-fund contract
+  because the month-over-month merge would otherwise produce a cartesian
+  product of spurious deltas.
+
 ### Score Bands
 | Score | Band | Meaning |
 |-------|------|---------|

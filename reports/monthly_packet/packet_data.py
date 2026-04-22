@@ -287,9 +287,11 @@ def top_by_score(
     """Return the top-N rows by `score_col`, dropping NaNs in that column."""
     if score_col not in table.columns:
         return pd.DataFrame()
+    sub = table.dropna(subset=[score_col])
+    sort_cols = [score_col, "Symbol"] if "Symbol" in sub.columns else [score_col]
+    ascending = [False, True] if "Symbol" in sub.columns else [False]
     out = (
-        table.dropna(subset=[score_col])
-        .sort_values(score_col, ascending=False)
+        sub.sort_values(sort_cols, ascending=ascending, kind="stable")
         .head(top_n)
         .reset_index(drop=True)
     )
@@ -305,17 +307,21 @@ def top_by_consensus(table: pd.DataFrame, top_n: int = 50) -> pd.DataFrame:
     `Consensus_Rank` is absent.
     """
     if "Consensus_Rank" in table.columns:
+        sub = table.dropna(subset=["Consensus_Rank"])
+        sort_cols = ["Consensus_Rank", "Symbol"] if "Symbol" in sub.columns else ["Consensus_Rank"]
+        ascending = [True, True] if "Symbol" in sub.columns else [True]
         out = (
-            table.dropna(subset=["Consensus_Rank"])
-            .sort_values("Consensus_Rank", ascending=True)
+            sub.sort_values(sort_cols, ascending=ascending, kind="stable")
             .head(top_n)
             .reset_index(drop=True)
         )
     elif {"Score_2023_Final", "Score_2025_Final"}.issubset(table.columns):
         tmp = table.dropna(subset=["Score_2023_Final", "Score_2025_Final"]).copy()
         tmp["Consensus_Score"] = (tmp["Score_2023_Final"] + tmp["Score_2025_Final"]) / 2.0
+        sort_cols = ["Consensus_Score", "Symbol"] if "Symbol" in tmp.columns else ["Consensus_Score"]
+        ascending = [False, True] if "Symbol" in tmp.columns else [False]
         out = (
-            tmp.sort_values("Consensus_Score", ascending=False)
+            tmp.sort_values(sort_cols, ascending=ascending, kind="stable")
             .head(top_n)
             .reset_index(drop=True)
         )
@@ -351,7 +357,14 @@ def disagreement_list(table: pd.DataFrame, min_gap: float = 10.0) -> pd.DataFram
     out = df[mask_gap | mask_band].copy()
     if "Score_Gap" not in out.columns:
         out["Score_Gap"] = gap_col[mask_gap | mask_band]
-    return out.sort_values("Score_Gap", key=lambda s: s.abs(), ascending=False).reset_index(drop=True)
+    out = out.assign(_abs_gap=out["Score_Gap"].abs())
+    sort_cols = ["_abs_gap", "Symbol"] if "Symbol" in out.columns else ["_abs_gap"]
+    ascending = [False, True] if "Symbol" in out.columns else [False]
+    return (
+        out.sort_values(sort_cols, ascending=ascending, kind="stable")
+        .drop(columns="_abs_gap")
+        .reset_index(drop=True)
+    )
 
 
 def dual_lens_matrix(table: pd.DataFrame) -> pd.DataFrame:
