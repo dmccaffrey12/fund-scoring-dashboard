@@ -122,6 +122,41 @@ def _compute_2025_coverage(df: pd.DataFrame) -> pd.Series:
     return coverage
 
 
+def _dedupe_by_symbol(
+    df: pd.DataFrame,
+    score_col: str,
+    category_col: str,
+) -> pd.DataFrame:
+    """Collapse duplicate-Symbol rows deterministically.
+
+    Picks the row with the highest score (NaN treated as lowest), breaking
+    ties on Category name (ascending) and then on original row order. The
+    sort uses a stable algorithm so results are reproducible across runs.
+    """
+    if "Symbol" not in df.columns or df["Symbol"].duplicated().sum() == 0:
+        return df.reset_index(drop=True)
+
+    work = df.copy()
+    work["_orig_idx"] = range(len(work))
+    sort_cols = ["Symbol"]
+    ascending = [True]
+    if score_col in work.columns:
+        sort_cols.append(score_col)
+        ascending.append(False)
+    if category_col in work.columns:
+        sort_cols.append(category_col)
+        ascending.append(True)
+    sort_cols.append("_orig_idx")
+    ascending.append(True)
+
+    work = work.sort_values(
+        sort_cols, ascending=ascending, kind="stable", na_position="last",
+    )
+    work = work.drop_duplicates(subset=["Symbol"], keep="first")
+    work = work.sort_values("_orig_idx", kind="stable").drop(columns="_orig_idx")
+    return work.reset_index(drop=True)
+
+
 def _classify_quadrant(score_2023: float, score_2025: float) -> str:
     """Assign a dual-lens quadrant label using the STRONG threshold (>= 80)."""
     if pd.isna(score_2023) or pd.isna(score_2025):
@@ -267,6 +302,21 @@ def build_dual_score_table(
         columns={k: v for k, v in keep_2023.items() if k in cols_present_2023}
     )
 
+    # ---- De-duplicate by Symbol on each side ----
+    # YCharts exports occasionally list the same ticker under more than one
+    # Morningstar category (mid-period reclassifications, share-class quirks).
+    # The dual-score table is a one-row-per-fund contract, and downstream
+    # month-over-month comparison merges on Symbol — leaving duplicates in
+    # place causes cartesian-product joins and spurious score movers on
+    # identical inputs. We collapse to one row per Symbol deterministically:
+    # highest score first, then Category name, then original row order.
+    df_2025_slim = _dedupe_by_symbol(
+        df_2025_slim, score_col="Score_2025_Final", category_col="Category_2025",
+    )
+    df_2023_slim = _dedupe_by_symbol(
+        df_2023_slim, score_col="Score_2023_Final", category_col="Category_2023",
+    )
+
     # ---- Join ----
     merged = df_2023_slim.merge(df_2025_slim, on="Symbol", how=how)
 
@@ -310,7 +360,18 @@ def build_dual_score_table(
         "Primary_Driver", "Action_Flag",
     ]
     final_cols = [c for c in ordered if c in merged.columns]
-    return merged[final_cols].sort_values("Consensus_Rank").reset_index(drop=True)
+    # Stable sort with Symbol tie-break so that identical inputs always
+    # produce identical row ordering (Consensus_Rank alone has many ties).
+    return (
+        merged[final_cols]
+        .sort_values(
+            ["Consensus_Rank", "Symbol"],
+            ascending=[True, True],
+            kind="stable",
+            na_position="last",
+        )
+        .reset_index(drop=True)
+    )
 
 
 # ---------------------------------------------------------------------------
