@@ -8,3 +8,8 @@ venv/
 .streamlit/secrets.toml
 streamlit/outputs/
 streamlit/runs/
+
+# Rendered Quarto packet outputs
+reports/monthly_packet/monthly_packet.html
+reports/monthly_packet/monthly_packet_files/
+reports/monthly_packet/.quarto/
