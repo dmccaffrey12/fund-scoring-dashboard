@@ -34,20 +34,24 @@ SANITIZED_ALIASES = {
 
 
 def test_default_aliases_include_known_share_class_pairs():
-    # Sanity check: the baked-in defaults include the two pairs documented
-    # in the config CSV. We don't test the exact tickers beyond a presence
-    # check because we want this test to remain stable if the map grows.
-    assert "PRBLX" in DEFAULT_ALIASES
-    assert DEFAULT_ALIASES["PRBLX"]
-    assert "GSTKX" in DEFAULT_ALIASES
+    # Baked-in defaults cover the four share-class pairs identified against
+    # the 4/22 model library: Parnassus Core, GS Small Cap Growth Insights,
+    # PIMCO Income, Fidelity Emerging Markets.
+    for original, scoring in (
+        ("PRBLX", "PRILX"),
+        ("GSTKX", "GSIKX"),
+        ("PONPX", "PIMIX"),
+        ("FECMX", "FEMKX"),
+    ):
+        assert DEFAULT_ALIASES.get(original) == scoring
 
 
 def test_shipped_config_csv_parses():
     # The config CSV shipped in the repo must parse cleanly.
     assert os.path.isfile(DEFAULT_ALIAS_CSV_PATH)
     loaded = load_aliases_from_csv(DEFAULT_ALIAS_CSV_PATH)
-    assert "PRBLX" in loaded
-    assert "GSTKX" in loaded
+    for original in ("PRBLX", "GSTKX", "PONPX", "FECMX"):
+        assert original in loaded
 
 
 def test_load_default_aliases_merges_extra(tmp_path):

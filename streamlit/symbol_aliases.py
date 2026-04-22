@@ -50,6 +50,8 @@ DEFAULT_ALIAS_CSV_PATH = os.path.join(_CONFIG_DIR, "symbol_aliases.csv")
 DEFAULT_ALIASES: Dict[str, str] = {
     "PRBLX": "PRILX",  # Parnassus Core Equity — dedupe kept institutional share class
     "GSTKX": "GSIKX",  # GS Small Cap Growth Insights — dedupe kept institutional share class
+    "PONPX": "PIMIX",  # PIMCO Income — dedupe kept institutional share class
+    "FECMX": "FEMKX",  # Fidelity Emerging Markets — dedupe kept oldest share class
 }
 
 

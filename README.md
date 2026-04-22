@@ -337,7 +337,8 @@ joining so the committee-facing `Symbol` in the model library is preserved
 while the score join happens against a reconciled ticker.
 
 - **Default map** (`streamlit/config/symbol_aliases.csv`, also baked into
-  `symbol_aliases.DEFAULT_ALIASES`): `PRBLX -> PRILX`, `GSTKX -> GSIKX`.
+  `symbol_aliases.DEFAULT_ALIASES`): `PRBLX -> PRILX`, `GSTKX -> GSIKX`,
+  `PONPX -> PIMIX`, `FECMX -> FEMKX`.
 - **Extend without code changes** by editing that CSV — required columns are
   `Original_Symbol`, `Scoring_Symbol`; `Reason` is free-text for audit.
 - **Override from the CLI** via `--alias-csv path/to/extra.csv`; entries in
