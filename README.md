@@ -181,6 +181,60 @@ python streamlit/run_archive.py create \
 ```
 When enabled, the full intake report is persisted to `validation/intake_report.json` inside the run folder and referenced from `run_metadata.json`.
 
+## Excel 2019 Audit Workbook
+
+`streamlit/excel_audit_export.py` turns any archived run into a single
+`.xlsx` audit workbook that opens cleanly in **Excel 2019**. It uses only
+legacy Excel features — no `XLOOKUP`, `LET`, `FILTER`, `SORT`, `UNIQUE`,
+or `SEQUENCE`. Every number is precomputed, so there are no dynamic-array
+formulas that would spill or break on older Excel.
+
+```bash
+cd streamlit
+
+# Export the latest archived run (default output under runs/<date>/reports/).
+python excel_audit_export.py export
+
+# Export a specific run date to an explicit path.
+python excel_audit_export.py export \
+    --run-date 2026-04-30 \
+    --out /tmp/fundscore_april.xlsx
+
+# Skip the month-over-month comparison sheets even when present.
+python excel_audit_export.py export --no-comparison
+```
+
+The default output location is:
+
+```
+streamlit/runs/<run-date>/reports/fundscore_audit_workbook.xlsx
+```
+
+Sheets included:
+
+| Sheet | Contents |
+|-------|----------|
+| `README_Runbook` | Generation metadata, run date, input hashes, row / band / quadrant / action counts, sheet index. |
+| `Methodology` | Scoring rubric, band and quadrant thresholds, Excel compatibility notes. |
+| `Data_Quality` | Row / joined / missing counts, score & coverage summaries, band / quadrant / fund-type counters. |
+| `Scored_Funds` | The full canonical dual-score table (one row per fund). |
+| `Top_50_2023` / `Top_50_2025` / `Top_50_Consensus` | Top-50 cuts by each score / consensus rank. |
+| `Disagreement_List` | Funds where 2023 and 2025 systems disagree (|Score_Gap| ≥ 10 or differing bands). |
+| `What_Changed` *(if comparison exists)* | Headline month-over-month metrics, sourced from `run_comparison`. |
+| `Score_Movers` / `Band_Changes` / `Quadrant_Changes` / `Action_Flag_Changes` / `New_Funds` / `Removed_Funds` *(if comparison exists)* | Detailed change tables carried over from the comparison bundle. |
+
+STRONG / REVIEW / WEAK band cells are conditionally shaded (green /
+yellow / red) and every dataset is a native Excel Table so sorting and
+filtering work without a macro.
+
+```python
+from run_archive import load_latest_run
+from excel_audit_export import build_audit_workbook
+
+run = load_latest_run()
+build_audit_workbook(run=run, out_path="/tmp/fundscore_audit.xlsx")
+```
+
 ## Validation Targets
 - SCHD (Passive): ~69.6
 - OMCIX (Active): ~68.7
