@@ -205,3 +205,76 @@ def test_unknown_symbol_sinks_to_review_missing_score():
     result = build_model_overlay(holdings, _dual_table())
     assert result.scorecard.iloc[0]["Overlay_Action"] == ACTION_REVIEW_COVERAGE
     assert bool(result.scorecard.iloc[0]["Scored_In_Universe"]) is False
+
+
+# ---------------------------------------------------------------------------
+# Share-class alias reconciliation
+# ---------------------------------------------------------------------------
+
+SANITIZED_ALIASES = {"ALIASA": "AAA"}  # AAA lives in the fixture dual table
+
+
+def test_alias_resolves_share_class_to_scored_row():
+    # ALIASA is not in the dual table, but resolves to AAA via alias.
+    holdings = pd.DataFrame([
+        {"Model_Name": "M", "Symbol": "ALIASA", "Target_Weight": 1.0},
+    ])
+    result = build_model_overlay(
+        holdings, _dual_table(), alias_map=SANITIZED_ALIASES,
+    )
+    row = result.scorecard.iloc[0]
+    # Committee-facing Symbol is preserved.
+    assert row["Symbol"] == "ALIASA"
+    # Scoring_Symbol is the resolved ticker used for the join.
+    assert row["Scoring_Symbol"] == "AAA"
+    assert bool(row["Alias_Applied"]) is True
+    assert bool(row["Scored_In_Universe"]) is True
+    # And the overlay action reflects the joined score, not missing coverage.
+    assert row["Overlay_Action"] == ACTION_HIGH_CONVICTION
+    # Metadata surfaces the alias usage.
+    assert result.metadata["alias_applied_rows"] == 1
+    pairs = result.metadata["alias_pairs"]
+    assert {p["original"]: p["scoring"] for p in pairs} == {"ALIASA": "AAA"}
+
+
+def test_aliased_symbol_excluded_from_research_candidates():
+    # If ALIASA resolves to AAA and AAA is held, AAA must not appear in
+    # research candidates (otherwise we'd recommend a fund we already own).
+    holdings = pd.DataFrame([
+        {"Model_Name": "M", "Symbol": "ALIASA", "Target_Weight": 1.0},
+    ])
+    result = build_model_overlay(
+        holdings, _dual_table(), alias_map=SANITIZED_ALIASES,
+    )
+    assert "AAA" not in set(result.research_candidates["Symbol"])
+
+
+def test_original_symbol_in_universe_not_overridden_by_alias():
+    # Existing fixture symbol CCC is in the dual table. Mapping CCC->DDD
+    # must NOT take effect because CCC is already valid.
+    holdings = pd.DataFrame([
+        {"Model_Name": "M", "Symbol": "CCC", "Target_Weight": 1.0},
+    ])
+    result = build_model_overlay(
+        holdings, _dual_table(), alias_map={"CCC": "DDD"},
+    )
+    row = result.scorecard.iloc[0]
+    assert row["Symbol"] == "CCC"
+    assert row["Scoring_Symbol"] == "CCC"
+    assert bool(row["Alias_Applied"]) is False
+
+
+def test_replacement_candidates_surface_current_scoring_symbol():
+    # DDD is Q4_Both_Weak in the fixture. Holding it via alias ALIASD should
+    # still produce replacement candidates, and the output row must carry
+    # both Current_Symbol (ALIASD) and Current_Scoring_Symbol (DDD).
+    holdings = pd.DataFrame([
+        {"Model_Name": "M", "Symbol": "ALIASD", "Target_Weight": 1.0},
+    ])
+    result = build_model_overlay(
+        holdings, _dual_table(), alias_map={"ALIASD": "DDD"},
+    )
+    rep = result.replacement_candidates
+    assert not rep.empty
+    assert set(rep["Current_Symbol"]) == {"ALIASD"}
+    assert set(rep["Current_Scoring_Symbol"]) == {"DDD"}

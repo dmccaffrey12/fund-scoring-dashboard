@@ -129,3 +129,62 @@ def test_summarize_runs():
     text = summarize(report)
     assert "Model Holdings Intake" in text
     assert "PASS" in text
+
+
+# ---------------------------------------------------------------------------
+# Alias behaviour
+# ---------------------------------------------------------------------------
+
+SANITIZED_ALIAS_MAP = {"ALIASA": "SCOREA", "ALIASB": "SCOREB"}
+
+
+def _alias_holdings_df():
+    return pd.DataFrame({
+        "Model_Name": ["M"] * 4,
+        "Symbol": ["ALIASA", "ALIASB", "KEEP", "GHOST"],
+        "Target_Weight": ["25%", "25%", "25%", "25%"],
+    })
+
+
+def test_coverage_applies_aliases_before_missing_check():
+    df = _alias_holdings_df()
+    universe = ["KEEP", "SCOREA", "SCOREB"]  # ALIASA/ALIASB only reachable via alias
+    report = validate_model_holdings_dataframe(
+        df, dual_score_symbols=universe, alias_map=SANITIZED_ALIAS_MAP,
+    )
+    cov = report["coverage"]
+    assert cov["available"] is True
+    # 3 of 4 rows resolve: ALIASA->SCOREA, ALIASB->SCOREB, KEEP kept. GHOST misses.
+    assert cov["covered_rows"] == 3
+    assert cov["alias_applied_rows"] == 2
+    assert cov["alias_covered_rows"] == 2
+    assert cov["distinct_aliases_used"] == 2
+    originals = {p["original"] for p in cov["alias_pairs"]}
+    assert originals == {"ALIASA", "ALIASB"}
+    # Still-missing originals surface unchanged.
+    assert cov["sample_missing_symbols"] == ["GHOST"]
+
+
+def test_alias_finding_emitted_when_alias_applied():
+    df = _alias_holdings_df()
+    universe = ["KEEP", "SCOREA", "SCOREB", "GHOST"]
+    report = validate_model_holdings_dataframe(
+        df, dual_score_symbols=universe, alias_map=SANITIZED_ALIAS_MAP,
+    )
+    assert "aliases_applied" in _codes(report)
+
+
+def test_default_alias_map_loaded_when_none_passed():
+    # Sanity: PRBLX + GSTKX resolve even without an explicit alias_map arg.
+    df = pd.DataFrame({
+        "Model_Name": ["M"] * 2,
+        "Symbol": ["PRBLX", "GSTKX"],
+        "Target_Weight": ["50%", "50%"],
+    })
+    universe = ["PRILX", "GSIKX"]
+    report = validate_model_holdings_dataframe(
+        df, dual_score_symbols=universe,
+    )
+    cov = report["coverage"]
+    assert cov["covered_rows"] == 2
+    assert cov["alias_applied_rows"] == 2

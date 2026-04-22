@@ -36,9 +36,15 @@ from __future__ import annotations
 import argparse
 import json
 import os
-from typing import Any, Dict, Iterable, List, Optional, Set
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Set
 
 import pandas as pd
+
+from symbol_aliases import (
+    apply_aliases,
+    load_default_aliases,
+    summarize_alias_usage,
+)
 
 
 REQUIRED_COLUMNS: List[str] = ["Model_Name", "Symbol", "Target_Weight"]
@@ -232,39 +238,82 @@ def _check_coverage(
     df: pd.DataFrame,
     dual_score_symbols: Optional[Iterable[str]],
     threshold: float = DEFAULT_MIN_COVERAGE_WARN,
+    alias_map: Optional[Mapping[str, str]] = None,
 ) -> (List[Dict[str, Any]], Dict[str, Any]):
+    """Coverage check that applies symbol aliases before comparing vs. the universe.
+
+    Reports alias-applied counts separately from still-unscored symbols so a
+    share-class mismatch doesn't look like a coverage gap.
+    """
     findings: List[Dict[str, Any]] = []
     stats: Dict[str, Any] = {"available": False}
     if dual_score_symbols is None or "Symbol" not in df.columns:
         return findings, stats
-    universe: Set[str] = {str(s).strip() for s in dual_score_symbols if str(s).strip()}
-    holdings = df["Symbol"].dropna().astype(str).str.strip()
-    holdings = holdings[holdings != ""]
-    if holdings.empty:
+    universe: Set[str] = {
+        str(s).strip().upper() for s in dual_score_symbols if str(s).strip()
+    }
+    raw_holdings = df["Symbol"].dropna().astype(str).str.strip()
+    raw_holdings = raw_holdings[raw_holdings != ""]
+    if raw_holdings.empty:
         return findings, stats
-    total = len(holdings)
-    covered_mask = holdings.isin(universe)
+
+    resolved = apply_aliases(
+        df.loc[raw_holdings.index, ["Symbol"]],
+        alias_map=alias_map,
+        universe=universe,
+    )
+    alias_summary = summarize_alias_usage(resolved, universe=universe)
+
+    total = int(len(raw_holdings))
+    scoring = resolved["Scoring_Symbol"].astype(str).str.upper()
+    covered_mask = scoring.isin(universe)
     covered = int(covered_mask.sum())
-    missing_symbols = sorted(set(holdings[~covered_mask]))
+
+    alias_applied_mask = resolved["Alias_Applied"].astype(bool)
+    alias_applied_rows = int(alias_applied_mask.sum())
+    alias_covered_rows = int((alias_applied_mask & covered_mask).sum())
+
+    missing_mask = ~covered_mask
+    missing_originals = sorted(
+        set(resolved.loc[missing_mask, "Original_Symbol"].astype(str))
+    )
     rate = round(covered / total, 4) if total else 0.0
+
     stats = {
         "available": True,
         "total_rows": total,
         "covered_rows": covered,
         "missing_rows": total - covered,
-        "distinct_missing_symbols": len(missing_symbols),
-        "sample_missing_symbols": missing_symbols[:20],
+        "distinct_missing_symbols": len(missing_originals),
+        "sample_missing_symbols": missing_originals[:20],
         "coverage_rate": rate,
+        "alias_applied_rows": alias_applied_rows,
+        "alias_covered_rows": alias_covered_rows,
+        "distinct_aliases_used": alias_summary["distinct_aliases_used"],
+        "alias_pairs": alias_summary["alias_pairs"],
     }
+
+    if alias_applied_rows:
+        findings.append(_finding(
+            "info", "aliases_applied",
+            f"Applied {alias_summary['distinct_aliases_used']} share-class "
+            f"alias(es) to {alias_applied_rows} holding row(s). "
+            f"{alias_covered_rows} now match the scored universe via an alias.",
+            alias_applied_rows=alias_applied_rows,
+            alias_covered_rows=alias_covered_rows,
+            alias_pairs=alias_summary["alias_pairs"],
+        ))
+
     if rate < threshold:
         findings.append(_finding(
             "warning", "low_universe_coverage",
             f"Only {rate * 100:.1f}% of model holdings match the scored fund "
-            f"universe (threshold {threshold * 100:.0f}%). "
-            f"{len(missing_symbols)} distinct symbol(s) are not scored.",
+            f"universe (threshold {threshold * 100:.0f}%) after applying "
+            f"{alias_applied_rows} alias row(s). "
+            f"{len(missing_originals)} distinct symbol(s) are still not scored.",
             coverage_rate=rate, threshold=threshold,
-            distinct_missing_symbols=len(missing_symbols),
-            sample=missing_symbols[:10],
+            distinct_missing_symbols=len(missing_originals),
+            sample=missing_originals[:10],
         ))
     return findings, stats
 
@@ -280,12 +329,19 @@ def validate_model_holdings_dataframe(
     source: Optional[str] = None,
     weight_tolerance: float = WEIGHT_SUM_TOLERANCE,
     min_coverage: float = DEFAULT_MIN_COVERAGE_WARN,
+    alias_map: Optional[Mapping[str, str]] = None,
 ) -> Dict[str, Any]:
     """Validate an in-memory model-holdings DataFrame.
 
     ``dual_score_symbols`` — iterable of symbols present in the scored
     universe. When supplied we report coverage / flag missing symbols.
+
+    ``alias_map`` — optional Original->Scoring symbol map. Applied before the
+    coverage check so share-class mismatches (e.g. PRBLX -> PRILX) don't
+    count as missing. Defaults to ``load_default_aliases()`` when omitted.
     """
+    if alias_map is None:
+        alias_map = load_default_aliases()
     findings: List[Dict[str, Any]] = []
 
     col_findings = _check_required_columns(df)
@@ -302,7 +358,7 @@ def validate_model_holdings_dataframe(
     findings.extend(weight_findings)
 
     coverage_findings, coverage_stats = _check_coverage(
-        df, dual_score_symbols, threshold=min_coverage,
+        df, dual_score_symbols, threshold=min_coverage, alias_map=alias_map,
     )
     findings.extend(coverage_findings)
 
@@ -355,6 +411,7 @@ def validate_model_holdings_file(
     dual_score_symbols: Optional[Iterable[str]] = None,
     weight_tolerance: float = WEIGHT_SUM_TOLERANCE,
     min_coverage: float = DEFAULT_MIN_COVERAGE_WARN,
+    alias_map: Optional[Mapping[str, str]] = None,
 ) -> Dict[str, Any]:
     if not os.path.isfile(path):
         return {
@@ -382,6 +439,7 @@ def validate_model_holdings_file(
         source=path,
         weight_tolerance=weight_tolerance,
         min_coverage=min_coverage,
+        alias_map=alias_map,
     )
 
 
@@ -413,6 +471,15 @@ def summarize(report: Dict[str, Any]) -> str:
             f"{coverage['total_rows']} rows "
             f"({coverage['coverage_rate'] * 100:.1f}%)"
         )
+        alias_rows = coverage.get("alias_applied_rows") or 0
+        if alias_rows:
+            pairs = coverage.get("alias_pairs") or []
+            lines.append(
+                f"  aliases applied: {alias_rows} row(s) via "
+                f"{coverage.get('distinct_aliases_used', 0)} alias(es)"
+            )
+            for p in pairs:
+                lines.append(f"    {p['original']} -> {p['scoring']}")
     for f in report.get("findings", []):
         sev = f["severity"].upper().ljust(7)
         lines.append(f"    [{sev}] {f['code']}: {f['message']}")
@@ -433,6 +500,13 @@ def _cli(argv: Optional[List[str]] = None) -> int:
         help="Optional: dual_score_table.csv to check symbol coverage against.",
     )
     parser.add_argument(
+        "--alias-csv", default=None,
+        help=(
+            "Optional: CSV with columns Original_Symbol,Scoring_Symbol,Reason "
+            "to extend the default share-class alias map."
+        ),
+    )
+    parser.add_argument(
         "--json-out", default=None,
         help="If set, write the full report to this path.",
     )
@@ -450,8 +524,10 @@ def _cli(argv: Optional[List[str]] = None) -> int:
         except Exception as exc:
             print(f"warning: could not read dual_score_table: {exc}")
 
+    alias_map = load_default_aliases(extra_path=args.alias_csv)
+
     report = validate_model_holdings_file(
-        args.path, dual_score_symbols=dual_symbols,
+        args.path, dual_score_symbols=dual_symbols, alias_map=alias_map,
     )
     if args.json_out:
         with open(args.json_out, "w") as f:

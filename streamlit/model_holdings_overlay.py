@@ -34,12 +34,17 @@ from __future__ import annotations
 import json
 import os
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Mapping, Optional
 
 import numpy as np
 import pandas as pd
 
 from model_holdings_intake import normalize_weights
+from symbol_aliases import (
+    apply_aliases,
+    load_default_aliases,
+    summarize_alias_usage,
+)
 
 
 OVERLAY_SUBDIR = "model_holdings"
@@ -74,7 +79,8 @@ RESEARCH_TOP_N_DEFAULT = 25
 REPLACEMENT_TOP_N_PER_CATEGORY = 3
 
 SCORECARD_COLUMNS = [
-    "Model_Name", "Symbol", "Fund_Name", "Sleeve", "Status",
+    "Model_Name", "Symbol", "Scoring_Symbol", "Alias_Applied",
+    "Fund_Name", "Sleeve", "Status",
     "Internal_Category", "Notes",
     "Target_Weight", "Target_Weight_Pct",
     "Name", "Category", "Fund_Type",
@@ -170,6 +176,7 @@ def _ensure_string_symbol(series: pd.Series) -> pd.Series:
 def _build_scorecard(
     holdings: pd.DataFrame,
     dual_table: pd.DataFrame,
+    alias_map: Optional[Mapping[str, str]] = None,
 ) -> pd.DataFrame:
     h = normalize_weights(holdings).copy()
     h["Symbol"] = _ensure_string_symbol(h["Symbol"])
@@ -177,6 +184,12 @@ def _build_scorecard(
     d = dual_table.copy()
     if "Symbol" in d.columns:
         d["Symbol"] = _ensure_string_symbol(d["Symbol"])
+
+    # Resolve aliases before joining so share-class mismatches don't show up
+    # as missing scores. The committee-visible ``Symbol`` stays intact; the
+    # join uses ``Scoring_Symbol``.
+    universe = set(d["Symbol"]) if "Symbol" in d.columns else None
+    h = apply_aliases(h, alias_map=alias_map, universe=universe)
 
     # Keep only join-relevant columns from the dual table so we don't
     # collide with holding-side columns (e.g. Fund_Name vs Name).
@@ -191,9 +204,9 @@ def _build_scorecard(
         ]
         if c in d.columns
     ]
-    d_slim = d[dual_cols]
+    d_slim = d[dual_cols].rename(columns={"Symbol": "Scoring_Symbol"})
 
-    merged = h.merge(d_slim, on="Symbol", how="left")
+    merged = h.merge(d_slim, on="Scoring_Symbol", how="left")
     merged["Scored_In_Universe"] = merged.get("Score_2025_Final").notna() | \
         merged.get("Score_2023_Final").notna()
 
@@ -368,7 +381,8 @@ def _build_replacement_candidates(
     top-N unheld same-category funds ranked by Consensus_Rank.
     """
     empty_cols = [
-        "Model_Name", "Current_Symbol", "Current_Name", "Current_Category",
+        "Model_Name", "Current_Symbol", "Current_Scoring_Symbol",
+        "Current_Name", "Current_Category",
         "Current_Score_2023_Final", "Current_Score_2025_Final",
         "Current_Score_Band_2023", "Current_Score_Band_2025",
         "Candidate_Rank", "Candidate_Symbol", "Candidate_Name",
@@ -383,7 +397,9 @@ def _build_replacement_candidates(
     if "Category" not in dual_table.columns or "Consensus_Rank" not in dual_table.columns:
         return pd.DataFrame(columns=empty_cols)
 
-    held_symbols = set(_ensure_string_symbol(scorecard["Symbol"]))
+    held_symbols: set = set(_ensure_string_symbol(scorecard["Symbol"]))
+    if "Scoring_Symbol" in scorecard.columns:
+        held_symbols.update(_ensure_string_symbol(scorecard["Scoring_Symbol"]))
     d = dual_table.copy()
     d["Symbol"] = _ensure_string_symbol(d["Symbol"])
     pool = d[~d["Symbol"].isin(held_symbols)].copy()
@@ -406,6 +422,7 @@ def _build_replacement_candidates(
             rows.append({
                 "Model_Name": h.get("Model_Name"),
                 "Current_Symbol": h.get("Symbol"),
+                "Current_Scoring_Symbol": h.get("Scoring_Symbol"),
                 "Current_Name": h.get("Name"),
                 "Current_Category": cat,
                 "Current_Score_2023_Final": h.get("Score_2023_Final"),
@@ -444,24 +461,50 @@ def build_model_overlay(
     *,
     research_top_n: int = RESEARCH_TOP_N_DEFAULT,
     replacement_top_per_category: int = REPLACEMENT_TOP_N_PER_CATEGORY,
+    alias_map: Optional[Mapping[str, str]] = None,
 ) -> OverlayResult:
     """Join holdings with the dual-score table and compute overlay artifacts.
 
     Neither input is mutated. Missing optional holding columns are tolerated;
     unknown symbols (not in the scored universe) show up with
     ``Overlay_Action = Review_Missing_Score`` rather than silently dropping.
+
+    ``alias_map`` — optional Original_Symbol -> Scoring_Symbol map applied
+    before the join. Defaults to ``load_default_aliases()`` when omitted, so
+    known share-class duplicates (e.g. PRBLX -> PRILX) reconcile without
+    touching the raw model-holdings CSV.
     """
-    scorecard = _build_scorecard(df_holdings, dual_table)
+    if alias_map is None:
+        alias_map = load_default_aliases()
+
+    scorecard = _build_scorecard(df_holdings, dual_table, alias_map=alias_map)
     summary = _build_summary(scorecard)
     current_review = _build_current_review(scorecard)
 
-    held_symbols = set(_ensure_string_symbol(scorecard["Symbol"])) if not scorecard.empty else set()
+    # Research/replacement candidates must exclude symbols already held,
+    # regardless of which share class the model happens to track. "Held"
+    # means either the original or the resolved scoring symbol appears.
+    held_symbols: set = set()
+    if not scorecard.empty:
+        held_symbols.update(_ensure_string_symbol(scorecard["Symbol"]))
+        if "Scoring_Symbol" in scorecard.columns:
+            held_symbols.update(_ensure_string_symbol(scorecard["Scoring_Symbol"]))
     research = _build_research_candidates(
         dual_table, held_symbols, top_n=research_top_n,
     )
     replacements = _build_replacement_candidates(
         scorecard, dual_table, top_per_category=replacement_top_per_category,
     )
+
+    # ``summarize_alias_usage`` expects ``Original_Symbol`` / ``Scoring_Symbol``.
+    # The scorecard keeps the original under ``Symbol`` (committee-facing), so
+    # rename for the summary only.
+    if not scorecard.empty and {"Symbol", "Scoring_Symbol", "Alias_Applied"}.issubset(scorecard.columns):
+        alias_summary = summarize_alias_usage(
+            scorecard.rename(columns={"Symbol": "Original_Symbol"}),
+        )
+    else:
+        alias_summary = summarize_alias_usage(pd.DataFrame())
 
     metadata = {
         "model_count": int(scorecard["Model_Name"].nunique()) if not scorecard.empty else 0,
@@ -472,6 +515,9 @@ def build_model_overlay(
         "research_candidate_count": int(len(research)),
         "current_review_count": int(len(current_review)),
         "universe_row_count": int(len(dual_table)),
+        "alias_applied_rows": alias_summary["alias_applied_rows"],
+        "distinct_aliases_used": alias_summary["distinct_aliases_used"],
+        "alias_pairs": alias_summary["alias_pairs"],
         "action_flag_counts": {
             str(k): int(v)
             for k, v in (scorecard["Overlay_Action"].value_counts(dropna=False).items()

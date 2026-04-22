@@ -39,6 +39,7 @@ from model_holdings_overlay import (
     load_overlay,
     write_overlay,
 )
+from symbol_aliases import load_default_aliases
 from run_archive import (
     DEFAULT_RUNS_DIR,
     create_run_archive,
@@ -303,16 +304,19 @@ def persist_model_holdings_upload(
 def run_model_holdings_intake(
     holdings_path: str,
     dual_table: Optional[pd.DataFrame] = None,
+    alias_csv_path: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Validate a model-holdings CSV against the universe in ``dual_table``.
 
     Returns the intake report dict with an extra ``summary_text`` field.
+    Share-class aliases are applied before the coverage check.
     """
     dual_symbols = None
     if dual_table is not None and "Symbol" in dual_table.columns:
         dual_symbols = dual_table["Symbol"].dropna().astype(str).tolist()
+    alias_map = load_default_aliases(extra_path=alias_csv_path)
     report = validate_model_holdings_file(
-        holdings_path, dual_score_symbols=dual_symbols,
+        holdings_path, dual_score_symbols=dual_symbols, alias_map=alias_map,
     )
     report["summary_text"] = summarize_model_holdings(report)
     return report
@@ -323,6 +327,7 @@ def generate_model_overlay_for_run(
     run_date: str,
     runs_dir: str = DEFAULT_RUNS_DIR,
     persist: bool = True,
+    alias_csv_path: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Build the overlay for the specified run and (optionally) persist it.
 
@@ -331,7 +336,8 @@ def generate_model_overlay_for_run(
     """
     run = load_run(run_date, runs_dir=runs_dir)
     holdings_df = pd.read_csv(holdings_path)
-    result = build_model_overlay(holdings_df, run["table"])
+    alias_map = load_default_aliases(extra_path=alias_csv_path)
+    result = build_model_overlay(holdings_df, run["table"], alias_map=alias_map)
 
     out_dir = run_overlay_dir(runs_dir, run_date)
     paths: Dict[str, str] = {}

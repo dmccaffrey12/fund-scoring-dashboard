@@ -83,6 +83,30 @@ def test_excel_audit_includes_overlay_sheets(tmp_path):
     assert "Replacement_Candidates" in sheets
 
 
+def test_overlay_includes_alias_columns_in_persisted_scorecard(tmp_path):
+    runs_dir = str(tmp_path / "runs")
+    table = build_dual_score_table()
+    create_run_archive(
+        run_date="2026-04-22", runs_dir=runs_dir, table=table,
+    )
+    holdings_path = os.path.join(_FIXTURES, "model_holdings_good.csv")
+    workflow_ui.generate_model_overlay_for_run(
+        holdings_path=holdings_path,
+        run_date="2026-04-22",
+        runs_dir=runs_dir,
+    )
+    # Persisted scorecard must carry the new reconciliation columns so
+    # downstream readers (Excel, committee review) see both the original
+    # committee-facing Symbol and the resolved Scoring_Symbol.
+    scorecard_path = os.path.join(
+        run_overlay_dir(runs_dir, "2026-04-22"),
+        "model_holdings_scorecard.csv",
+    )
+    sc = pd.read_csv(scorecard_path)
+    for col in ("Symbol", "Scoring_Symbol", "Alias_Applied"):
+        assert col in sc.columns
+
+
 def test_excel_audit_skips_overlay_sheets_when_absent(tmp_path):
     runs_dir = str(tmp_path / "runs")
     table = build_dual_score_table()

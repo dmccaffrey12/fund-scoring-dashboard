@@ -328,16 +328,44 @@ without collapsing their disagreement:
 | `Review_Missing_Score` | Held but not in the scored fund universe (ticker change, share-class quirk, or legitimately unscored). |
 | `Research_Candidate` | Not held today but scores STRONG in at least one system — surfaced on `research_candidates.csv`. |
 
+### Share-class alias reconciliation
+
+YCharts' duplicate-removal step keeps a single representative per fund, so a
+model may record one share class (e.g. `PRBLX`) while the scored universe
+contains another (e.g. `PRILX`). The overlay applies an alias layer before
+joining so the committee-facing `Symbol` in the model library is preserved
+while the score join happens against a reconciled ticker.
+
+- **Default map** (`streamlit/config/symbol_aliases.csv`, also baked into
+  `symbol_aliases.DEFAULT_ALIASES`): `PRBLX -> PRILX`, `GSTKX -> GSIKX`.
+- **Extend without code changes** by editing that CSV — required columns are
+  `Original_Symbol`, `Scoring_Symbol`; `Reason` is free-text for audit.
+- **Override from the CLI** via `--alias-csv path/to/extra.csv`; entries in
+  the extra CSV merge on top of the defaults.
+- **Override from library code** by passing `alias_map=...` to
+  `build_model_overlay` or `validate_model_holdings_*`.
+
+The scorecard carries **both** `Symbol` (original, committee-facing) and
+`Scoring_Symbol` (resolved, used for the join) along with an `Alias_Applied`
+flag. `replacement_candidates.csv` surfaces `Current_Scoring_Symbol` alongside
+`Current_Symbol`. Intake coverage reporting counts alias-applied rows
+separately from still-unscored symbols, and the overlay metadata records
+every `Original -> Scoring` pair that fired.
+
 ### CLI / library flow
 
 ```python
 from model_holdings_overlay import build_model_overlay, write_overlay
 from run_archive import load_run, run_overlay_dir
+from symbol_aliases import load_default_aliases
 import pandas as pd
 
 run = load_run("2026-04-30")
 holdings = pd.read_csv("my_models.csv")
-result = build_model_overlay(holdings, run["table"])
+result = build_model_overlay(
+    holdings, run["table"],
+    alias_map=load_default_aliases(),   # omit to use defaults automatically
+)
 write_overlay(result, run_overlay_dir("streamlit/runs", "2026-04-30"))
 ```
 
