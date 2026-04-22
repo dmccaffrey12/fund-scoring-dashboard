@@ -357,7 +357,8 @@ with st.sidebar:
     page = st.radio(
         "Navigation",
         ["Dashboard", "Batch Scores", "Fund Lookup", "Category Analysis",
-         "Score Explainer", "2023 vs 2025 Comparison", "PDF Reports", "History", "Upload CSV"],
+         "Score Explainer", "2023 vs 2025 Comparison", "PDF Reports", "History",
+         "Monthly Workflow", "Upload CSV"],
         label_visibility="collapsed",
     )
     st.markdown("---")
@@ -2068,6 +2069,268 @@ elif page == "History":
                 use_container_width=True,
                 hide_index=True,
             )
+
+
+# ===========================================================================
+# PAGE: Monthly Workflow
+# ===========================================================================
+
+elif page == "Monthly Workflow":
+    import datetime as _dt
+
+    import workflow_ui
+
+    st.markdown("## Monthly Workflow")
+    st.caption(
+        "Upload paired YCharts exports, validate, archive a dated run, preview the "
+        "dual-score table, optionally compare against the prior run, and export "
+        "the Excel audit workbook."
+    )
+    st.info(
+        "**Note:** Run archives are written to the local filesystem "
+        "(`streamlit/runs/YYYY-MM-DD/`). On Streamlit Cloud the filesystem is "
+        "ephemeral — archives do not persist across container restarts unless "
+        "the app is configured with a persistent/shared directory.",
+        icon="ℹ️",
+    )
+
+    # ---- Session state ----
+    _ss = st.session_state
+    _ss.setdefault("mw_last_run_date", None)
+    _ss.setdefault("mw_intake_report", None)
+    _ss.setdefault("mw_upload_tmpdir", None)
+
+    # ---- Step 1: Upload + run date ----
+    st.markdown("### 1 · Upload & Run Date")
+    c1, c2 = st.columns(2)
+    with c1:
+        file_2025 = st.file_uploader(
+            "YCharts 2025 export (CSV)",
+            type=["csv"], key="mw_file_2025",
+        )
+    with c2:
+        file_2023 = st.file_uploader(
+            "YCharts 2023 export (CSV)",
+            type=["csv"], key="mw_file_2023",
+        )
+    c3, c4 = st.columns([1, 1])
+    with c3:
+        run_date = st.date_input(
+            "Run date",
+            value=_dt.date.today(),
+            key="mw_run_date",
+        ).isoformat()
+    with c4:
+        overwrite = st.checkbox(
+            "Overwrite if run exists", value=False, key="mw_overwrite",
+        )
+    notes = st.text_input(
+        "Notes (optional, stored in run metadata)", value="", key="mw_notes",
+    )
+
+    # ---- Step 2: Validate ----
+    st.markdown("### 2 · Intake Validation")
+    validate_btn = st.button(
+        "Run Validation (Preflight)",
+        disabled=(file_2025 is None or file_2023 is None),
+        key="mw_btn_validate",
+    )
+    if validate_btn:
+        workflow_ui.cleanup_tmp(_ss.get("mw_upload_tmpdir"))
+        p25, p23, tmp = workflow_ui.persist_uploads(
+            file_2025.getvalue(), file_2023.getvalue(),
+        )
+        _ss["mw_upload_tmpdir"] = tmp
+        _ss["mw_upload_paths"] = (p25, p23)
+        with st.spinner("Validating uploaded files…"):
+            _ss["mw_intake_report"] = workflow_ui.run_intake(p25, p23)
+
+    intake = _ss.get("mw_intake_report")
+    if intake:
+        counts = intake.get("finding_counts", {})
+        status = "FAIL" if intake.get("failed") else "PASS"
+        st.markdown(
+            f"**Status:** `{status}` · errors {counts.get('error', 0)} · "
+            f"warnings {counts.get('warning', 0)} · info {counts.get('info', 0)}"
+        )
+        join = intake.get("join") or {}
+        if join.get("available"):
+            st.caption(
+                f"Symbol overlap: {join['symbols_common']:,} common · "
+                f"{join['symbols_only_2025']:,} 2025-only · "
+                f"{join['symbols_only_2023']:,} 2023-only "
+                f"({join['overlap_rate_vs_smaller'] * 100:.1f}%)"
+            )
+        with st.expander("Validation details"):
+            st.code(intake.get("summary_text", ""), language="text")
+
+    # ---- Step 3: Archive ----
+    st.markdown("### 3 · Build Table & Create Run Archive")
+    archive_btn = st.button(
+        "Create Run Archive",
+        disabled=(_ss.get("mw_upload_paths") is None),
+        key="mw_btn_archive",
+        type="primary",
+    )
+    if archive_btn:
+        p25, p23 = _ss["mw_upload_paths"]
+        try:
+            with st.spinner("Building dual-score table and writing archive…"):
+                run = workflow_ui.create_archive_from_uploads(
+                    path_2025=p25,
+                    path_2023=p23,
+                    run_date=run_date,
+                    overwrite=overwrite,
+                    preflight="warn",
+                    notes=notes or None,
+                )
+            _ss["mw_last_run_date"] = run_date
+            st.success(
+                f"Archive created for {run_date} · "
+                f"{run['validation'].get('row_count', 0):,} rows · "
+                f"path `{run['path']}`"
+            )
+        except FileExistsError as exc:
+            st.error(str(exc))
+        except Exception as exc:
+            st.error(f"Archive creation failed: {exc}")
+
+    # ---- Step 4: Previews from latest (or last-created) run ----
+    st.markdown("### 4 · Dual-Score Table Previews")
+    from run_archive import load_run as _load_run  # local import, avoids top-of-file churn
+
+    active_date = _ss.get("mw_last_run_date")
+    run = None
+    if active_date:
+        try:
+            run = _load_run(active_date)
+        except Exception:
+            run = None
+    if run is None:
+        run = workflow_ui.load_latest()
+
+    if run is None:
+        st.caption("No archived runs found yet — create one above.")
+    else:
+        val = run.get("validation") or {}
+        k1, k2, k3, k4 = st.columns(4)
+        with k1:
+            st.metric("Run Date", run.get("run_date", "—"))
+        with k2:
+            st.metric("Rows", f"{val.get('row_count', 0):,}")
+        with k3:
+            s25 = val.get("score_2025", {}) or {}
+            st.metric(
+                "Avg Score 2025",
+                f"{s25.get('mean'):.1f}" if s25.get("mean") is not None else "—",
+            )
+        with k4:
+            s23 = val.get("score_2023", {}) or {}
+            st.metric(
+                "Avg Score 2023",
+                f"{s23.get('mean'):.1f}" if s23.get("mean") is not None else "—",
+            )
+
+        previews = workflow_ui.top_previews(run["table"])
+        tab1, tab2, tab3, tab4 = st.tabs(
+            ["Top 50 · 2023", "Top 50 · 2025", "Top 50 · Consensus", "Top 50 · Disagreement"]
+        )
+        with tab1:
+            st.dataframe(previews["top_2023"], use_container_width=True, hide_index=True)
+        with tab2:
+            st.dataframe(previews["top_2025"], use_container_width=True, hide_index=True)
+        with tab3:
+            st.dataframe(previews["top_consensus"], use_container_width=True, hide_index=True)
+        with tab4:
+            st.dataframe(previews["disagreement"], use_container_width=True, hide_index=True)
+
+    # ---- Step 5: Archive list + comparison ----
+    st.markdown("### 5 · Archived Runs & Comparison")
+    runs_available = workflow_ui.available_runs()
+    if not runs_available:
+        st.caption("No archived runs found.")
+    else:
+        st.write(f"**{len(runs_available)}** run(s) on disk:")
+        st.code("\n".join(runs_available), language="text")
+
+    if len(runs_available) >= 2:
+        if st.button("Run Comparison (latest vs prior)", key="mw_btn_compare"):
+            try:
+                with st.spinner("Computing comparison…"):
+                    comp = workflow_ui.maybe_compare()
+                if comp is None:
+                    st.warning("Not enough runs to compare.")
+                else:
+                    st.success(
+                        f"Compared {comp['latest_date']} vs {comp['prior_date']}"
+                    )
+                    summ = comp.get("summary", {})
+                    st.json(summ)
+                    for name, df in comp["tables"].items():
+                        if df is None or df.empty:
+                            continue
+                        with st.expander(f"{name} ({len(df):,} rows)"):
+                            st.dataframe(df, use_container_width=True, hide_index=True)
+            except Exception as exc:
+                st.error(f"Comparison failed: {exc}")
+    else:
+        st.caption("At least two archived runs are required to run a comparison.")
+
+    # ---- Step 6: Excel audit export ----
+    st.markdown("### 6 · Excel Audit Workbook")
+    if runs_available:
+        export_date = st.selectbox(
+            "Export run date",
+            options=list(reversed(runs_available)),
+            index=0,
+            key="mw_export_date",
+        )
+        if st.button("Build Audit Workbook", key="mw_btn_xlsx"):
+            try:
+                with st.spinner("Rendering Excel workbook…"):
+                    fname, data = workflow_ui.build_audit_workbook_bytes(
+                        run_date=export_date,
+                    )
+                st.session_state["mw_xlsx_bytes"] = data
+                st.session_state["mw_xlsx_fname"] = fname
+                st.success(f"Built {fname} ({len(data):,} bytes)")
+            except Exception as exc:
+                st.error(f"Workbook export failed: {exc}")
+
+        if st.session_state.get("mw_xlsx_bytes"):
+            st.download_button(
+                "⬇ Download Audit Workbook (.xlsx)",
+                data=st.session_state["mw_xlsx_bytes"],
+                file_name=st.session_state["mw_xlsx_fname"],
+                mime=(
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                ),
+                key="mw_xlsx_download",
+            )
+    else:
+        st.caption("Create a run archive above to enable the audit export.")
+
+    # ---- Step 7: Monthly packet (Quarto) ----
+    st.markdown("### 7 · Monthly Packet (Quarto)")
+    packet_path = workflow_ui.find_packet_html()
+    if packet_path:
+        with open(packet_path, "rb") as fh:
+            st.download_button(
+                "⬇ Download Monthly Packet HTML",
+                data=fh.read(),
+                file_name=os.path.basename(packet_path),
+                mime="text/html",
+                key="mw_packet_download",
+            )
+        st.caption(f"Serving pre-rendered packet from `{packet_path}`.")
+    else:
+        st.caption(
+            "No pre-rendered packet found. Render it from the project root with:"
+        )
+        st.code(
+            "quarto render reports/monthly_packet/monthly_packet.qmd",
+            language="bash",
+        )
 
 
 # ===========================================================================
