@@ -28,12 +28,24 @@ import pandas as pd
 
 from dual_score_table import build_dual_score_table
 from excel_audit_export import export_run
+from model_holdings_intake import (
+    summarize as summarize_model_holdings,
+    validate_model_holdings_dataframe,
+    validate_model_holdings_file,
+)
+from model_holdings_overlay import (
+    OverlayResult,
+    build_model_overlay,
+    load_overlay,
+    write_overlay,
+)
 from run_archive import (
     DEFAULT_RUNS_DIR,
     create_run_archive,
     list_runs,
     load_latest_run,
     load_run,
+    run_overlay_dir,
 )
 from run_comparison import (
     InsufficientRunsError,
@@ -266,6 +278,87 @@ def build_audit_workbook_bytes(
         with open(target, "rb") as f:
             data = f.read()
     return (f"fund_scoring_audit_{run_date}.xlsx", data)
+
+
+# ---------------------------------------------------------------------------
+# Model holdings overlay (optional)
+# ---------------------------------------------------------------------------
+
+def persist_model_holdings_upload(
+    file_bytes: bytes,
+    dest_dir: Optional[str] = None,
+) -> Tuple[str, str]:
+    """Write uploaded model-holdings CSV bytes to disk.
+
+    Returns (path, tmp_dir). Caller owns ``tmp_dir`` unless ``dest_dir``
+    was supplied.
+    """
+    tmp_dir = dest_dir or tempfile.mkdtemp(prefix="fundscore_models_")
+    path = os.path.join(tmp_dir, "model_holdings.csv")
+    with open(path, "wb") as f:
+        f.write(file_bytes)
+    return path, tmp_dir
+
+
+def run_model_holdings_intake(
+    holdings_path: str,
+    dual_table: Optional[pd.DataFrame] = None,
+) -> Dict[str, Any]:
+    """Validate a model-holdings CSV against the universe in ``dual_table``.
+
+    Returns the intake report dict with an extra ``summary_text`` field.
+    """
+    dual_symbols = None
+    if dual_table is not None and "Symbol" in dual_table.columns:
+        dual_symbols = dual_table["Symbol"].dropna().astype(str).tolist()
+    report = validate_model_holdings_file(
+        holdings_path, dual_score_symbols=dual_symbols,
+    )
+    report["summary_text"] = summarize_model_holdings(report)
+    return report
+
+
+def generate_model_overlay_for_run(
+    holdings_path: str,
+    run_date: str,
+    runs_dir: str = DEFAULT_RUNS_DIR,
+    persist: bool = True,
+) -> Dict[str, Any]:
+    """Build the overlay for the specified run and (optionally) persist it.
+
+    The returned dict has the same shape as ``load_overlay`` plus an
+    ``OverlayResult`` object under ``"result"``.
+    """
+    run = load_run(run_date, runs_dir=runs_dir)
+    holdings_df = pd.read_csv(holdings_path)
+    result = build_model_overlay(holdings_df, run["table"])
+
+    out_dir = run_overlay_dir(runs_dir, run_date)
+    paths: Dict[str, str] = {}
+    if persist:
+        paths = write_overlay(result, out_dir)
+
+    return {
+        "run_date": run_date,
+        "path": out_dir,
+        "paths": paths,
+        "result": result,
+        "scorecard": result.scorecard,
+        "summary": result.summary,
+        "current_review": result.current_review,
+        "research_candidates": result.research_candidates,
+        "replacement_candidates": result.replacement_candidates,
+        "metadata": result.metadata,
+    }
+
+
+def load_model_overlay_for_run(
+    run_date: str,
+    runs_dir: str = DEFAULT_RUNS_DIR,
+) -> Optional[Dict[str, Any]]:
+    """Return persisted overlay artifacts for the run, or None if absent."""
+    out_dir = run_overlay_dir(runs_dir, run_date)
+    return load_overlay(out_dir)
 
 
 # ---------------------------------------------------------------------------

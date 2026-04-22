@@ -1,0 +1,6 @@
+Model_Name,Symbol,Target_Weight,Fund_Name,Sleeve,Status,Internal_Category,Notes
+Moderate,AAA,40%,Fixture Fund Alpha,Core Equity,Hold,LargeBlend,High conviction
+Moderate,BBB,35%,Fixture Fund Beta,Core Equity,Hold,LargeBlend,
+Moderate,CCC,25%,Fixture Fund Gamma,Small Cap,Review,SmallValue,
+Aggressive,AAA,50%,Fixture Fund Alpha,Core Equity,Hold,LargeBlend,
+Aggressive,BBB,50%,Fixture Fund Beta,Core Equity,Hold,LargeBlend,

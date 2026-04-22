@@ -86,7 +86,16 @@ SHEET_ACTION_CHANGES = "Action_Flag_Changes"
 SHEET_NEW_FUNDS = "New_Funds"
 SHEET_REMOVED_FUNDS = "Removed_Funds"
 
+# Model-holdings overlay sheets — added only when the overlay bundle is
+# present on disk under <run>/model_holdings/.
+SHEET_MODEL_SUMMARY = "Model_Summary"
+SHEET_MODEL_HOLDINGS = "Model_Holdings"
+SHEET_MODEL_REVIEW_LIST = "Model_Review_List"
+SHEET_RESEARCH_CANDIDATES = "Research_Candidates"
+SHEET_REPLACEMENT_CANDIDATES = "Replacement_Candidates"
+
 COMPARISON_SUBDIR = "comparison"  # matches run_comparison.default_comparison_dir
+MODEL_OVERLAY_SUBDIR = "model_holdings"  # matches model_holdings_overlay.OVERLAY_SUBDIR
 
 HEADER_FILL = PatternFill(start_color="FF1F4E78", end_color="FF1F4E78", fill_type="solid")
 HEADER_FONT = Font(name="Calibri", size=11, bold=True, color="FFFFFFFF")
@@ -330,6 +339,47 @@ def _load_comparison_tables(
         "new_funds": _safe_read("new_funds.csv"),
         "removed_funds": _safe_read("removed_funds.csv"),
         "summary": summary,
+    }
+
+
+def _load_model_overlay(
+    runs_dir: str, run_date: str
+) -> Optional[Dict[str, Any]]:
+    """Return the model-holdings overlay artifacts for this run, if any."""
+    folder = os.path.join(runs_dir, run_date, MODEL_OVERLAY_SUBDIR)
+    if not os.path.isdir(folder):
+        return None
+
+    def _safe_read(fname: str) -> pd.DataFrame:
+        path = os.path.join(folder, fname)
+        if not os.path.isfile(path):
+            return pd.DataFrame()
+        try:
+            return pd.read_csv(path)
+        except pd.errors.EmptyDataError:
+            return pd.DataFrame()
+
+    scorecard_path = os.path.join(folder, "model_holdings_scorecard.csv")
+    if not os.path.isfile(scorecard_path):
+        return None
+
+    meta: Dict[str, Any] = {}
+    meta_path = os.path.join(folder, "overlay_metadata.json")
+    if os.path.isfile(meta_path):
+        try:
+            with open(meta_path) as f:
+                meta = json.load(f)
+        except json.JSONDecodeError:
+            meta = {}
+
+    return {
+        "folder": folder,
+        "summary": _safe_read("model_summary.csv"),
+        "scorecard": _safe_read("model_holdings_scorecard.csv"),
+        "current_review": _safe_read("current_holdings_review.csv"),
+        "research_candidates": _safe_read("research_candidates.csv"),
+        "replacement_candidates": _safe_read("replacement_candidates.csv"),
+        "metadata": meta,
     }
 
 
@@ -632,6 +682,10 @@ def build_audit_workbook(
     if include_comparison and runs_dir and run_date != "unknown":
         comparison = _load_comparison_tables(runs_dir, run_date)
 
+    overlay: Optional[Dict[str, Any]] = None
+    if runs_dir and run_date != "unknown":
+        overlay = _load_model_overlay(runs_dir, run_date)
+
     generated_at = dt.datetime.now(dt.timezone.utc).isoformat()
 
     wb = Workbook()
@@ -669,6 +723,30 @@ def build_audit_workbook(
     ws_d = wb.create_sheet(SHEET_DISAGREEMENT)
     _add_table(ws_d, disagree, "tbl_disagreement")
     _apply_band_fills(ws_d, disagree, ("Score_Band_2023", "Score_Band_2025"))
+
+    if overlay is not None:
+        summary_df = overlay.get("summary", pd.DataFrame())
+        ws_ms = wb.create_sheet(SHEET_MODEL_SUMMARY)
+        _add_table(ws_ms, summary_df, "tbl_model_summary")
+
+        scorecard_df = overlay.get("scorecard", pd.DataFrame())
+        ws_mh = wb.create_sheet(SHEET_MODEL_HOLDINGS)
+        _add_table(ws_mh, scorecard_df, "tbl_model_holdings")
+        _apply_band_fills(ws_mh, scorecard_df, ("Score_Band_2023", "Score_Band_2025"))
+
+        review_df = overlay.get("current_review", pd.DataFrame())
+        ws_mr = wb.create_sheet(SHEET_MODEL_REVIEW_LIST)
+        _add_table(ws_mr, review_df, "tbl_model_review_list")
+        _apply_band_fills(ws_mr, review_df, ("Score_Band_2023", "Score_Band_2025"))
+
+        research_df = overlay.get("research_candidates", pd.DataFrame())
+        ws_rc = wb.create_sheet(SHEET_RESEARCH_CANDIDATES)
+        _add_table(ws_rc, research_df, "tbl_research_candidates")
+        _apply_band_fills(ws_rc, research_df, ("Score_Band_2023", "Score_Band_2025"))
+
+        replacement_df = overlay.get("replacement_candidates", pd.DataFrame())
+        ws_rp = wb.create_sheet(SHEET_REPLACEMENT_CANDIDATES)
+        _add_table(ws_rp, replacement_df, "tbl_replacement_candidates")
 
     if comparison is not None:
         ws_wc = wb.create_sheet(SHEET_WHAT_CHANGED)
