@@ -46,6 +46,46 @@ Funds with partial history are scored on available metrics only — the denomina
 | 60-79.9 | 🟡 REVIEW | Average to above-average |
 | < 60 | 🔴 WEAK | Below-average, investigate alternatives |
 
+## Run Archive
+
+Each scoring run can be archived to a dated folder so future month-over-month
+comparisons (and the planned Excel 2019 audit export) have a stable substrate
+to read from.
+
+```bash
+cd streamlit
+
+# Create a dated archive from bundled data (defaults to today's date)
+python run_archive.py create --notes "April committee packet"
+
+# Use a specific date or custom inputs
+python run_archive.py create \
+    --run-date 2026-04-30 \
+    --path-2025 /path/to/ycharts_export.csv \
+    --path-2023 /path/to/scores_2023.csv
+
+# Inspect available runs
+python run_archive.py list
+python run_archive.py show --latest
+python run_archive.py show --run-date 2026-04-30
+```
+
+Each archive is laid out as:
+
+```
+streamlit/runs/
+  latest.json                      # manifest pointing at the newest run
+  YYYY-MM-DD/
+    data/dual_score_table.csv      # canonical PR 3 output
+    metadata/run_metadata.json     # run date, timestamp, input hashes, columns
+    validation/validation_report.json  # row / band / quadrant counts, score ranges
+```
+
+`runs/latest.json` is a plain JSON manifest rather than a symlink so the
+layout works on Windows and inside restricted CI runners. The `runs/`
+directory is gitignored — archives are intended to live on the analyst's
+machine or in a shared drive, not in the repo.
+
 ## Data Source
 Export CSV from YCharts Fund Screener with the required metrics. See each app's documentation for the expected column format.
 
