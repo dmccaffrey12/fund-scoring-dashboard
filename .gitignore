@@ -7,3 +7,4 @@ __pycache__/
 venv/
 .streamlit/secrets.toml
 streamlit/outputs/
+streamlit/runs/
