@@ -1,6 +1,6 @@
 ---
 title: "Monthly Fund Review — Committee Packet"
-subtitle: "Dual-Lens Scoring (Performance 2023 + Quality/Risk 2025)"
+subtitle: "Dual-Lens Scoring (Performance 2023 + Quality/Risk 2025) with Model Holdings Overlay"
 author: "Investment Committee"
 date: today
 format:
@@ -46,6 +46,13 @@ from packet_data import (  # noqa: E402
     dual_lens_matrix,
     quadrant_counts,
     metadata_banner,
+    model_stackup,
+    action_flag_weight_matrix,
+    weak_holdings,
+    replacement_candidates_for_committee,
+    research_candidates_for_committee,
+    alias_notes,
+    KNOWN_ALIASES,
 )
 
 TOP_N = 50
@@ -66,6 +73,7 @@ metadata = inputs.metadata
 validation = inputs.validation or {}
 intake = inputs.intake
 comparison = inputs.comparison
+overlay = inputs.model_overlay
 banner = metadata_banner(metadata)
 ```
 
@@ -80,6 +88,15 @@ lines = [
     f"**Generated:** {banner['generated_at']}",
     f"**Archive:** `{os.path.relpath(inputs.run_path, Path.cwd())}`",
 ]
+if overlay is not None:
+    meta = overlay.metadata or {}
+    lines.append(
+        f"**Model overlay:** {int(meta.get('model_count', 0))} models · "
+        f"{int(meta.get('holding_row_count', 0))} holding rows · "
+        f"{int(meta.get('scored_holding_count', 0))} scored."
+    )
+else:
+    lines.append("_No model-holdings overlay archived for this run._")
 if banner["notes"]:
     lines.append(f"**Notes:** {banner['notes']}")
 Markdown("  \n".join(lines))
@@ -92,7 +109,7 @@ Markdown("  \n".join(lines))
 bullets = []
 
 total = int(len(table))
-bullets.append(f"**Universe:** {total:,} funds in the dual-score table.")
+bullets.append(f"**Universe:** {total:,} scored funds in the dual-lens table.")
 
 band_counts_25 = validation.get("band_counts_2025") or (
     table["Score_Band_2025"].value_counts(dropna=False).to_dict()
@@ -122,21 +139,37 @@ for msg in filter(None, [
 ]):
     bullets.append(msg)
 
-joined_count = validation.get("joined_count")
-if joined_count is None and {"Score_2023_Final", "Score_2025_Final"}.issubset(table.columns):
-    joined_count = int(table[["Score_2023_Final", "Score_2025_Final"]].notna().all(axis=1).sum())
-if joined_count is not None:
-    bullets.append(f"**Both-lens coverage:** {joined_count:,} funds have scores in both systems.")
-
-quad_counts = quadrant_counts(table)
-if not quad_counts.empty:
-    parts = [f"{q}: {n:,}" for q, n in quad_counts.items()]
-    bullets.append("**Quadrant mix:** " + " · ".join(parts))
-
-top5 = top_by_consensus(table, top_n=5)
-if not top5.empty and "Symbol" in top5.columns:
-    tickers = ", ".join(top5["Symbol"].astype(str).tolist())
-    bullets.append(f"**Top 5 consensus ideas this cycle:** {tickers}.")
+if overlay is not None and not overlay.summary.empty:
+    s = overlay.summary
+    n_models = int(s["Model_Name"].nunique())
+    bullets.append(
+        f"**Model coverage:** {n_models} models reviewed; "
+        f"target-weighted scores shown per model in **Model Stack-Up**."
+    )
+    meta = overlay.metadata or {}
+    flags = meta.get("action_flag_counts", {}) or {}
+    if flags:
+        parts = []
+        for key in ("High_Conviction_Hold", "Performance_Led_Hold_Review_Quality",
+                    "Quality_Led_Hold_Review_Patience", "Replacement_Candidate",
+                    "Review_Missing_Score"):
+            if key in flags:
+                label = key.replace("_", " ")
+                parts.append(f"{label}: {int(flags[key])}")
+        if parts:
+            bullets.append("**Holding-level action flags:** " + " · ".join(parts))
+    repl = int(meta.get("replacement_row_count", 0))
+    research = int(meta.get("research_candidate_count", 0))
+    if repl or research:
+        bullets.append(
+            f"**Committee queue:** {repl:,} replacement candidate rows · "
+            f"{research:,} research candidates surfaced from the broader universe."
+        )
+else:
+    bullets.append(
+        "_No model holdings overlay present — committee discussion below "
+        "is universe-wide only._"
+    )
 
 if comparison is not None:
     s = comparison.summary
@@ -153,101 +186,225 @@ else:
 Markdown("\n\n".join(f"- {b}" for b in bullets))
 ```
 
-# Data Quality & Preflight
+# Model Stack-Up
 
 ```{python}
-#| tags: [data-quality]
-rows = []
-
-if validation:
-    rows.append(("Row count", validation.get("row_count")))
-    rows.append(("Joined (both scores)", validation.get("joined_count")))
-    rows.append(("Missing Score_2023_Final", validation.get("missing_score_2023")))
-    rows.append(("Missing Score_2025_Final", validation.get("missing_score_2025")))
-
-    for key, label in [
-        ("score_2023", "2023 score"),
-        ("score_2025", "2025 score"),
-        ("score_gap", "Score gap (2025 − 2023)"),
-    ]:
-        s = validation.get(key) or {}
-        if s.get("min") is not None:
-            rows.append((
-                f"{label} range",
-                f"min {s['min']:.1f} · mean {s['mean']:.1f} · max {s['max']:.1f} · missing {s.get('missing', 0):,}",
-            ))
-    for key, label in [("coverage_2023", "Data coverage 2023"), ("coverage_2025", "Data coverage 2025")]:
-        s = validation.get(key) or {}
-        if s.get("mean") is not None:
-            rows.append((label, f"mean {s['mean']:.2f} · min {s['min']:.2f} · missing {s.get('missing', 0):,}"))
-else:
-    rows.append(("Validation report", "not available"))
-
-qa_df = pd.DataFrame(rows, columns=["Metric", "Value"])
-qa_df
-```
-
-```{python}
-#| tags: [intake]
-def _collect_intake_findings(report):
-    """Flatten findings from report_2025 / report_2023 / join_findings."""
-    if not report:
-        return []
-    items = []
-    for src_key in ("report_2025", "report_2023"):
-        sub = report.get(src_key) or {}
-        for f in sub.get("findings") or []:
-            items.append({**f, "source": src_key.replace("report_", "")})
-    for f in report.get("join_findings") or []:
-        items.append({**f, "source": "join"})
-    return items
-
-
-if intake is None:
+#| tags: [model-stackup-intro]
+if overlay is None or overlay.summary.empty:
     Markdown(
-        "_No `intake_report.json` in this run — YCharts preflight was not run. "
-        "Re-archive with `python streamlit/run_archive.py create ... --preflight warn` "
-        "to capture intake findings alongside the next packet._"
+        "> ⚠️ No model-holdings overlay archived for this run. "
+        "Upload a model-library CSV via the Streamlit monthly workflow page "
+        "and re-archive to populate this section."
     )
 else:
-    failed = intake.get("failed")
-    counts = intake.get("finding_counts") or {}
-    findings = _collect_intake_findings(intake)
-
-    by_severity = {}
-    for f in findings:
-        sev = f.get("severity", "info")
-        by_severity.setdefault(sev, []).append(f)
-
-    header = "🔴 Preflight **FAILED**" if failed else "🟢 Preflight passed"
-    summary_parts = []
-    for sev in ("error", "warning", "info"):
-        n = int(counts.get(sev, 0))
-        if n:
-            summary_parts.append(f"{sev}: {n}")
-    summary_line = " · ".join(summary_parts) if summary_parts else "no findings"
-
-    blocks = [f"{header} — {summary_line}", ""]
-    for sev in ("error", "warning", "info"):
-        items = by_severity.get(sev, [])
-        if not items:
-            continue
-        blocks.append(f"**{sev.capitalize()} ({len(items)})**")
-        for f in items[:15]:
-            code = f.get("code") or f.get("check") or "?"
-            msg = f.get("message", "")
-            src = f.get("source", "")
-            tag = f"{src}:{code}" if src else code
-            blocks.append(f"- `{tag}` — {msg}")
-        if len(items) > 15:
-            blocks.append(f"- _+{len(items) - 15} more…_")
-        blocks.append("")
-    if not findings:
-        blocks.append("_No findings recorded._")
-    Markdown("\n".join(blocks))
+    Markdown(
+        "Target-weighted average scores for each model, plus the weight share "
+        "in each action-flag bucket. The two scores are kept **separate** — "
+        "a model's 2023 and 2025 averages can diverge, and committee discussion "
+        "should treat that divergence as a signal rather than a noise."
+    )
 ```
 
-# Top 50 Consensus Ideas
+```{python}
+#| tags: [model-stackup-table]
+if overlay is not None and not overlay.summary.empty:
+    view = model_stackup(overlay.summary)
+    view
+```
+
+```{python}
+#| tags: [model-weighted-scores-chart]
+if overlay is not None and not overlay.summary.empty and {
+    "Model_Name", "Weighted_Score_2023", "Weighted_Score_2025",
+}.issubset(overlay.summary.columns):
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    s = overlay.summary.copy()
+    s = s.dropna(subset=["Weighted_Score_2023", "Weighted_Score_2025"], how="all")
+    s = s.sort_values("Model_Name", kind="stable")
+    if not s.empty:
+        idx = np.arange(len(s))
+        width = 0.4
+        fig, ax = plt.subplots(figsize=(9, max(3.5, 0.45 * len(s) + 1.5)))
+        ax.barh(idx - width / 2, s["Weighted_Score_2023"].fillna(0),
+                height=width, color="#4c78a8", label="2023 Performance")
+        ax.barh(idx + width / 2, s["Weighted_Score_2025"].fillna(0),
+                height=width, color="#f58518", label="2025 Quality/Risk")
+        ax.set_yticks(idx)
+        ax.set_yticklabels(s["Model_Name"])
+        ax.invert_yaxis()
+        ax.set_xlabel("Target-weighted average score (0–100)")
+        ax.set_title("Target-Weighted Model Scores by Lens")
+        ax.axvline(80, color="grey", lw=0.6, ls="--", alpha=0.7)
+        ax.axvline(60, color="grey", lw=0.4, ls=":", alpha=0.6)
+        ax.set_xlim(0, 105)
+        ax.legend(loc="lower right")
+        plt.tight_layout()
+        plt.show()
+```
+
+# Action Flag Breakdown
+
+```{python}
+#| tags: [action-flag-intro]
+if overlay is None or overlay.summary.empty:
+    Markdown("> ⚠️ Action-flag breakdown unavailable without the model overlay.")
+else:
+    Markdown(
+        "Weight share (%) of each model's portfolio by committee action flag. "
+        "*High Conviction Hold* = strong on both lenses. *Replacement Candidate* "
+        "= weak on at least one lens and failing on the other. *Performance-Led* "
+        "and *Quality-Led* rows are the dual-lens disagreements that deserve "
+        "the most narrative discussion."
+    )
+```
+
+```{python}
+#| tags: [action-flag-matrix]
+if overlay is not None and not overlay.summary.empty:
+    matrix = action_flag_weight_matrix(overlay.summary)
+    if matrix.empty:
+        Markdown("_No action-flag weight columns present in the summary._")
+    else:
+        matrix
+```
+
+```{python}
+#| tags: [action-flag-chart]
+if overlay is not None and not overlay.summary.empty:
+    matrix = action_flag_weight_matrix(overlay.summary)
+    if not matrix.empty:
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+
+        palette = {
+            "High Conviction Hold": "#2ca02c",
+            "Performance-Led / Review Quality": "#1f77b4",
+            "Quality-Led / Review Patience": "#9467bd",
+            "Replacement Candidate": "#d62728",
+            "Unscored / Coverage Gap": "#7f7f7f",
+        }
+        fig, ax = plt.subplots(figsize=(9, max(3.0, 0.5 * len(matrix) + 1.5)))
+        bottom = np.zeros(len(matrix))
+        y = np.arange(len(matrix))
+        for col in matrix.columns:
+            vals = matrix[col].fillna(0).to_numpy()
+            ax.barh(y, vals, left=bottom, height=0.65,
+                    color=palette.get(col, "#bbbbbb"), label=col)
+            bottom = bottom + vals
+        ax.set_yticks(y)
+        ax.set_yticklabels(matrix.index)
+        ax.invert_yaxis()
+        ax.set_xlabel("Weight share (%)")
+        ax.set_title("Action-Flag Weight Mix by Model")
+        ax.legend(loc="lower right", bbox_to_anchor=(1.0, -0.15), ncol=2, fontsize=8)
+        plt.tight_layout()
+        plt.show()
+```
+
+# Model-by-Model Review
+
+```{python}
+#| tags: [model-by-model-intro]
+if overlay is None or overlay.scorecard.empty:
+    Markdown("> ⚠️ Holding-level scorecard unavailable without the model overlay.")
+else:
+    Markdown(
+        "Each model's full holdings enriched with dual-lens scores, bands, "
+        "quadrant, and the overlay's committee action flag. Rows are sorted "
+        "by consensus rank (best first); unscored holdings sink to the bottom."
+    )
+```
+
+```{python}
+#| tags: [model-by-model-tables]
+if overlay is not None and not overlay.scorecard.empty:
+    sc = overlay.scorecard.copy()
+    show_cols = [c for c in [
+        "Symbol", "Scoring_Symbol", "Alias_Applied",
+        "Name", "Category", "Fund_Type", "Target_Weight_Pct",
+        "Score_2023_Final", "Score_2025_Final",
+        "Score_Band_2023", "Score_Band_2025", "Quadrant",
+        "Overlay_Action",
+    ] if c in sc.columns]
+    blocks = []
+    for model_name, block in sc.groupby("Model_Name", sort=True):
+        view = block[show_cols].copy()
+        for c in ("Score_2023_Final", "Score_2025_Final", "Target_Weight_Pct"):
+            if c in view.columns:
+                view[c] = view[c].round(1)
+        blocks.append(f"## {model_name}")
+        blocks.append(view.to_markdown(index=False))
+        blocks.append("")
+    Markdown("\n\n".join(blocks))
+```
+
+# Replacement Candidates
+
+```{python}
+#| tags: [replacement-intro]
+if overlay is None or overlay.replacement_candidates.empty:
+    Markdown(
+        "> ✅ No replacement candidates surfaced this cycle. Either no current "
+        "holding is flagged `Replacement_Candidate` or the overlay didn't "
+        "produce a populated candidate pool."
+    )
+else:
+    Markdown(
+        "For each current holding flagged `Replacement_Candidate`, the top "
+        "same-category alternates ranked by consensus. These are suggestions "
+        "to anchor committee discussion — not an automated buy list."
+    )
+```
+
+```{python}
+#| tags: [replacement-table]
+if overlay is not None and not overlay.replacement_candidates.empty:
+    replacement_candidates_for_committee(overlay.replacement_candidates, top_per_holding=3)
+```
+
+# Research Candidates
+
+```{python}
+#| tags: [research-intro]
+if overlay is None or overlay.research_candidates.empty:
+    Markdown(
+        "> ℹ️ No research candidates in the overlay output. A research "
+        "candidate is a high-consensus fund **not held** by any current "
+        "model — absence usually means the universe's top ideas are already "
+        "represented."
+    )
+else:
+    Markdown(
+        "Top-ranked funds in the broader scored universe that are **not** "
+        "currently held by any model. Ordered by consensus rank — best ideas "
+        "first. These are candidates for deeper due diligence, not automatic "
+        "adds."
+    )
+```
+
+```{python}
+#| tags: [research-table]
+if overlay is not None and not overlay.research_candidates.empty:
+    research_candidates_for_committee(overlay.research_candidates, top_n=25)
+```
+
+# Dual-Lens Universe Context
+
+```{python}
+#| tags: [dual-lens-intro]
+Markdown(
+    "The overlay views above are filtered to held and candidate funds. The "
+    "sections below keep the full universe visible so the committee can see "
+    "what the ambient scoring environment looks like before drilling into "
+    "model specifics."
+)
+```
+
+## Top 50 Consensus Ideas
 
 ```{python}
 #| tags: [consensus]
@@ -267,11 +424,7 @@ else:
     view
 ```
 
-Consensus rank = dense rank on the average of the per-lens ranks. Top of the
-list = durable ideas that rank well on **both** the realised-performance lens
-and the forward-looking quality/risk lens.
-
-# Top 50 by Performance Lens (2023)
+## Top 50 by Performance Lens (2023)
 
 ```{python}
 #| tags: [perf-2023]
@@ -291,11 +444,7 @@ else:
     view
 ```
 
-The 2023 methodology emphasises **realised outcomes** — trailing 5Y/10Y
-returns, alpha vs. category, upside/downside capture, drawdown, manager tenure.
-A backwards-looking performance lens.
-
-# Top 50 by Quality/Risk Lens (2025)
+## Top 50 by Quality/Risk Lens (2025)
 
 ```{python}
 #| tags: [quality-2025]
@@ -315,12 +464,7 @@ else:
     view
 ```
 
-The 2025 methodology re-weights toward **information ratio, Sortino,
-tracking error, and cost** — a forward-looking *quality and risk-efficiency*
-lens. Passive and active funds are scored by their own metric panels but
-placed on a common 0–100 scale via within-category percentile ranking.
-
-# Disagreement List
+## Disagreement List
 
 ```{python}
 #| tags: [disagreements]
@@ -346,16 +490,14 @@ else:
     view
 ```
 
-Funds where the 2023 and 2025 lenses tell materially different stories:
-either the score gap is large in absolute terms or they sit in different
-bands. These are the cases that merit the most narrative discussion —
-strong performance history paired with deteriorating risk profile, or vice
-versa.
+Funds where the 2023 and 2025 lenses tell materially different stories. These
+are the ambient-universe analogue of the overlay's Performance-Led and
+Quality-Led action flags.
 
-# Dual-Lens Matrix
+## Dual-Lens Matrix
 
 ```{python}
-#| tags: [dual-lens-matrix]
+#| tags: [dual-lens-scatter]
 if {"Score_2023_Final", "Score_2025_Final"}.issubset(table.columns):
     import matplotlib
     matplotlib.use("Agg")
@@ -365,16 +507,27 @@ if {"Score_2023_Final", "Score_2025_Final"}.issubset(table.columns):
     fig, ax = plt.subplots(figsize=(9, 6.5))
     ax.scatter(
         plot_df["Score_2023_Final"], plot_df["Score_2025_Final"],
-        s=6, alpha=0.25, color="#1f77b4", rasterized=True,
+        s=6, alpha=0.22, color="#1f77b4", rasterized=True,
     )
+    # Overlay currently-held scoring symbols when available.
+    if overlay is not None and not overlay.scorecard.empty:
+        held_syms = set(overlay.scorecard["Scoring_Symbol"].dropna().astype(str))
+        if held_syms and "Symbol" in plot_df.columns:
+            held_plot = plot_df[plot_df["Symbol"].astype(str).isin(held_syms)]
+            if not held_plot.empty:
+                ax.scatter(
+                    held_plot["Score_2023_Final"], held_plot["Score_2025_Final"],
+                    s=26, color="#d62728", label="Currently held", zorder=3,
+                )
     if "Consensus_Rank" in plot_df.columns:
         top25_plot = plot_df.nsmallest(25, "Consensus_Rank")
     else:
-        plot_df = plot_df.assign(_consensus=(plot_df["Score_2023_Final"] + plot_df["Score_2025_Final"]) / 2)
-        top25_plot = plot_df.nlargest(25, "_consensus")
+        plot_df2 = plot_df.assign(_consensus=(plot_df["Score_2023_Final"] + plot_df["Score_2025_Final"]) / 2)
+        top25_plot = plot_df2.nlargest(25, "_consensus")
     ax.scatter(
         top25_plot["Score_2023_Final"], top25_plot["Score_2025_Final"],
-        s=28, color="#d62728", label="Top 25 consensus", zorder=3,
+        s=38, facecolors="none", edgecolors="#2ca02c", linewidths=1.2,
+        label="Top 25 consensus", zorder=4,
     )
     ax.axhline(80, color="grey", lw=0.8, ls="--")
     ax.axvline(80, color="grey", lw=0.8, ls="--")
@@ -386,10 +539,6 @@ if {"Score_2023_Final", "Score_2025_Final"}.issubset(table.columns):
     ax.set_xlim(0, 105)
     ax.set_ylim(0, 115)
     ax.legend(loc="lower right")
-    ax.text(90, 95, "Consensus\nSTRONG", color="#2ca02c", ha="center", fontsize=9, alpha=0.9)
-    ax.text(30, 95, "Quality only", color="#7f7f7f", ha="center", fontsize=9, alpha=0.8)
-    ax.text(90, 25, "Performance only", color="#7f7f7f", ha="center", fontsize=9, alpha=0.8)
-    ax.text(30, 25, "Avoid / review", color="#d62728", ha="center", fontsize=9, alpha=0.8)
     plt.tight_layout()
     plt.show()
 else:
@@ -406,8 +555,7 @@ else:
 ```
 
 Rows = 2025 Quality/Risk band. Columns = 2023 Performance band.
-**Top-left cell** (rows[0]=STRONG 2025 × cols[0]=STRONG 2023 after reindex:
-`STRONG / STRONG`) is the committee's highest-conviction bucket.
+`STRONG / STRONG` is the committee's highest-conviction bucket.
 
 ```{python}
 #| tags: [quadrant-summary]
@@ -515,29 +663,157 @@ if comparison is not None:
         Markdown("\n\n".join(blocks))
 ```
 
+# Data Quality & Alias Reconciliation
+
+## Post-scoring validation
+
+```{python}
+#| tags: [data-quality]
+rows = []
+
+if validation:
+    rows.append(("Row count", validation.get("row_count")))
+    rows.append(("Joined (both scores)", validation.get("joined_count")))
+    rows.append(("Missing Score_2023_Final", validation.get("missing_score_2023")))
+    rows.append(("Missing Score_2025_Final", validation.get("missing_score_2025")))
+
+    for key, label in [
+        ("score_2023", "2023 score"),
+        ("score_2025", "2025 score"),
+        ("score_gap", "Score gap (2025 − 2023)"),
+    ]:
+        s = validation.get(key) or {}
+        if s.get("min") is not None:
+            rows.append((
+                f"{label} range",
+                f"min {s['min']:.1f} · mean {s['mean']:.1f} · max {s['max']:.1f} · missing {s.get('missing', 0):,}",
+            ))
+    for key, label in [("coverage_2023", "Data coverage 2023"), ("coverage_2025", "Data coverage 2025")]:
+        s = validation.get(key) or {}
+        if s.get("mean") is not None:
+            rows.append((label, f"mean {s['mean']:.2f} · min {s['min']:.2f} · missing {s.get('missing', 0):,}"))
+else:
+    rows.append(("Validation report", "not available"))
+
+qa_df = pd.DataFrame(rows, columns=["Metric", "Value"])
+qa_df
+```
+
+## Intake preflight findings
+
+```{python}
+#| tags: [intake]
+def _collect_intake_findings(report):
+    if not report:
+        return []
+    items = []
+    for src_key in ("report_2025", "report_2023"):
+        sub = report.get(src_key) or {}
+        for f in sub.get("findings") or []:
+            items.append({**f, "source": src_key.replace("report_", "")})
+    for f in report.get("join_findings") or []:
+        items.append({**f, "source": "join"})
+    return items
+
+
+if intake is None:
+    Markdown(
+        "_No `intake_report.json` in this run — YCharts preflight was not run. "
+        "Re-archive with `python streamlit/run_archive.py create ... --preflight warn` "
+        "to capture intake findings alongside the next packet._"
+    )
+else:
+    failed = intake.get("failed")
+    counts = intake.get("finding_counts") or {}
+    findings = _collect_intake_findings(intake)
+
+    by_severity = {}
+    for f in findings:
+        sev = f.get("severity", "info")
+        by_severity.setdefault(sev, []).append(f)
+
+    header = "🔴 Preflight **FAILED**" if failed else "🟢 Preflight passed"
+    summary_parts = []
+    for sev in ("error", "warning", "info"):
+        n = int(counts.get(sev, 0))
+        if n:
+            summary_parts.append(f"{sev}: {n}")
+    summary_line = " · ".join(summary_parts) if summary_parts else "no findings"
+
+    blocks = [f"{header} — {summary_line}", ""]
+    for sev in ("error", "warning", "info"):
+        items = by_severity.get(sev, [])
+        if not items:
+            continue
+        blocks.append(f"**{sev.capitalize()} ({len(items)})**")
+        for f in items[:15]:
+            code = f.get("code") or f.get("check") or "?"
+            msg = f.get("message", "")
+            src = f.get("source", "")
+            tag = f"{src}:{code}" if src else code
+            blocks.append(f"- `{tag}` — {msg}")
+        if len(items) > 15:
+            blocks.append(f"- _+{len(items) - 15} more…_")
+        blocks.append("")
+    if not findings:
+        blocks.append("_No findings recorded._")
+    Markdown("\n".join(blocks))
+```
+
+## Alias reconciliation
+
+```{python}
+#| tags: [alias-reconciliation]
+if overlay is None:
+    Markdown(
+        "_Alias reconciliation only applies when the model-holdings overlay "
+        "is present._"
+    )
+else:
+    meta = overlay.metadata or {}
+    applied_rows = int(meta.get("alias_applied_rows", 0))
+    distinct = int(meta.get("distinct_aliases_used", 0))
+    header = (
+        f"The overlay resolves share-class mismatches between the model "
+        f"library and the scored universe *before* joining — the "
+        f"committee-visible Symbol stays intact; only the join key is "
+        f"rewritten. This cycle applied **{applied_rows}** alias rewrites "
+        f"across **{distinct}** distinct mappings."
+    )
+    notes = alias_notes(meta)
+    if notes:
+        rows = [
+            {"Original": n["original"], "Scoring": n["scoring"], "Reason": n["reason"] or "—"}
+            for n in notes
+        ]
+        df = pd.DataFrame(rows)
+    else:
+        df = pd.DataFrame(columns=["Original", "Scoring", "Reason"])
+    # Always show the full baked-in list for committee reference so readers
+    # know which share-class consolidations exist regardless of this cycle's
+    # observed rewrites.
+    known_df = pd.DataFrame(
+        [{"Original": o, "Scoring": s, "Reason": r} for o, s, r in KNOWN_ALIASES],
+    )
+    Markdown(header)
+    print("Applied this cycle:")
+    # Trigger printing the applied aliases table:
+    display_applied = df if not df.empty else pd.DataFrame({"—": ["(none applied this cycle)"]})
+    display_applied
+```
+
+```{python}
+#| tags: [alias-known]
+if overlay is not None:
+    Markdown("**Known share-class consolidations (baked-in defaults):**")
+    pd.DataFrame(
+        [{"Original": o, "Scoring": s, "Reason": r} for o, s, r in KNOWN_ALIASES],
+    )
+```
+
 # Methodology Notes
 
-## Data Inputs
-
-The packet is generated from a single archived run directory — the canonical
-substrate produced by `streamlit/run_archive.py`. Resolution order:
-
-1. `FUND_PACKET_RUN_PATH` env var (explicit path)
-2. `FUND_PACKET_RUN_DATE` env var under `FUND_PACKET_RUNS_DIR`
-3. `streamlit/runs/latest.json` manifest
-4. Newest dated folder under `streamlit/runs/`
-
-Artifacts consumed:
-
-| Artifact | Purpose | Required? |
-|---|---|---|
-| `data/dual_score_table.csv` | One-row-per-fund dual-score table | ✅ |
-| `metadata/run_metadata.json` | Run date, timestamp, input hashes | ✅ |
-| `validation/validation_report.json` | Row / band / quadrant counts, score ranges | Optional |
-| `validation/intake_report.json` | YCharts preflight findings | Optional |
-| `comparison/prior_<YYYY-MM-DD>/` | Month-over-month change tables | Optional |
-
-## Scoring Systems
+## Scoring lenses
 
 - **2023 Performance Lens** — 15-metric combined panel (returns, alpha,
   upside/downside capture, drawdown, manager tenure, expense ratio, AUM).
@@ -552,14 +828,56 @@ Artifacts consumed:
 - **Quadrants** — `Q1_Both_Strong`, `Q2_Only_2025`, `Q3_Only_2023`,
   `Q4_Both_Weak` using the same 80 / 60 thresholds.
 
-## Known Limitations
+## Model holdings overlay
+
+The overlay joins the uploaded model library against the dual-score table
+and emits a scorecard (one row per holding), a per-model summary (target-
+weighted averages + band/quadrant shares), current-holdings review, and
+replacement + research candidate lists. The overlay is a *lens* on top of
+the scored universe — it does not alter any score.
+
+**Action flags** (holding-level, distinct from the base `Action_Flag`):
+
+- `High_Conviction_Hold` — STRONG on both lenses.
+- `Performance_Led_Hold_Review_Quality` — STRONG 2023, REVIEW/WEAK 2025.
+- `Quality_Led_Hold_Review_Patience` — STRONG 2025, REVIEW/WEAK 2023.
+- `Replacement_Candidate` — WEAK on at least one lens and failing on the
+  other (or both WEAK).
+- `Review_Missing_Score` — holding is not in the scored universe.
+
+**Alias map.** Share-class mismatches (e.g. `PRBLX` vs `PRILX`) are
+reconciled before the join using `streamlit/config/symbol_aliases.csv` plus
+the four baked-in defaults listed above. Raw user CSVs are never edited.
+
+## Data inputs
+
+The packet reads these artifacts from a single run directory:
+
+| Artifact | Purpose | Required? |
+|---|---|---|
+| `data/dual_score_table.csv` | One-row-per-fund dual-score table | ✅ |
+| `metadata/run_metadata.json` | Run date, timestamp, input hashes | ✅ |
+| `validation/validation_report.json` | Row / band / quadrant counts, score ranges | Optional |
+| `validation/intake_report.json` | YCharts preflight findings | Optional |
+| `comparison/prior_<YYYY-MM-DD>/` | Month-over-month change tables | Optional |
+| `model_holdings/model_summary.csv` | Per-model target-weighted averages | Optional |
+| `model_holdings/model_holdings_scorecard.csv` | One-row-per-holding enriched with scores | Optional |
+| `model_holdings/current_holdings_review.csv` | Holdings flagged for attention | Optional |
+| `model_holdings/replacement_candidates.csv` | Top same-category alternates per weak holding | Optional |
+| `model_holdings/research_candidates.csv` | Unheld high-consensus ideas | Optional |
+| `model_holdings/overlay_metadata.json` | Action-flag counts, alias summary | Optional |
+
+## Known limitations
 
 1. **Consensus rank is unweighted.** A production weighting may favour the
    forward-looking 2025 lens.
-2. **Top-50 tables are universe-wide.** Filter to the firm's approved list
-   before committee distribution.
+2. **Replacement candidates are mechanical.** Same-category consensus-rank
+   ordering; manager-level due diligence still belongs to the committee.
 3. **Intake preflight is optional.** If `intake_report.json` is absent the
    Data Quality section reports only the post-scoring validation counters.
+4. **Overlay coverage depends on the alias map.** Unreconciled share-class
+   mismatches surface as `Review_Missing_Score` rather than silently joining
+   incorrectly.
 
 ## Render
 
