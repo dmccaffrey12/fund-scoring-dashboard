@@ -86,6 +86,53 @@ layout works on Windows and inside restricted CI runners. The `runs/`
 directory is gitignored — archives are intended to live on the analyst's
 machine or in a shared drive, not in the repo.
 
+## Run Comparison (Month-over-Month "What Changed")
+
+The old "What Changed" panel compared the 2023 and 2025 systems within a
+single snapshot — a cross-system diff, not a time diff. `run_comparison.py`
+replaces that proxy with a true month-over-month comparison: it joins two
+archived runs on `Symbol` and emits one bundle of change tables plus a
+JSON summary.
+
+```bash
+cd streamlit
+
+# Latest vs the run immediately before it.
+python run_comparison.py compare
+
+# Compare two specific run dates.
+python run_comparison.py compare \
+    --latest-date 2026-04-30 \
+    --prior-date 2026-03-31
+
+# Cap to the 25 biggest movers per metric and skip writing files.
+python run_comparison.py compare --top-n 25 --dry-run
+```
+
+Output lands under the latest run's folder so it travels with the archive:
+
+```
+streamlit/runs/<latest>/comparison/prior_<prior>/
+    score_movers.csv           # long-format: Symbol, Metric, Value_Prior, Value_Latest, Delta, Abs_Delta
+    band_changes.csv           # Score_Band_2023 / Score_Band_2025 transitions
+    quadrant_changes.csv       # Quadrant transitions
+    action_flag_changes.csv    # Action_Flag transitions
+    new_funds.csv              # funds in latest but not prior
+    removed_funds.csv          # funds in prior but not latest
+    summary.json               # counts + run dates for a glanceable diff
+```
+
+If fewer than two runs exist the CLI exits with a clear error rather than
+silently emitting an empty comparison. The module is importable from
+Streamlit, Quarto, and Excel-export code paths — no UI is wired up yet.
+
+```python
+from run_comparison import run_comparison
+
+result, paths = run_comparison()          # latest vs prior, persisted
+result, _ = run_comparison(write=False)   # in-memory only
+```
+
 ## Data Source
 Export CSV from YCharts Fund Screener with the required metrics. See each app's documentation for the expected column format.
 
