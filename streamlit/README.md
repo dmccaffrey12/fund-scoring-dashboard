@@ -184,3 +184,59 @@ textColor          = "#CDCCCA"
 | pandas | ≥2.0.0 |
 | numpy | ≥1.24.0 |
 | plotly | ≥5.18.0 |
+
+---
+
+## Dual-Score Table — Shared Data Contract
+
+`dual_score_table.py` produces a single canonical DataFrame — one row per
+fund — that joins the **2023 Combined System** (`scores_2023.csv`) with the
+**2025 Split System** (scored live from a YCharts export). This is the
+shared contract consumed by the Streamlit app, the Quarto monthly packet,
+and the future Excel audit export.
+
+### Usage
+
+```python
+from dual_score_table import build_dual_score_table
+
+table = build_dual_score_table()           # uses bundled defaults
+table = build_dual_score_table(how="outer")  # keep funds in either system
+```
+
+CLI:
+
+```bash
+python dual_score_table.py --out outputs/dual_score_table.csv
+```
+
+### Columns
+
+| Column | Type | Notes |
+|---|---|---|
+| `Symbol` | str | Ticker — join key |
+| `Name` | str | Prefers 2025 source, falls back to 2023 |
+| `Category` | str | Morningstar category, same fallback rule |
+| `Fund_Type` | str | `Passive` or `Active` (from 2025 engine) |
+| `Score_2023_Final` | float | 2023 Combined System (0–100) |
+| `Score_2025_Final` | float | 2025 system (0–100) |
+| `Score_Gap` | float | `Score_2025_Final − Score_2023_Final` |
+| `Rank_2023` / `Rank_2025` | Int | Dense rank, 1 = best |
+| `Consensus_Rank` | Int | Dense rank on the mean of the two ranks |
+| `Score_Band_2023` / `Score_Band_2025` | str | `STRONG` / `REVIEW` / `WEAK` (80 / 60) |
+| `Quadrant` | str | `Q1_Both_Strong`, `Q2_Only_2025`, `Q3_Only_2023`, `Q4_Both_Weak` |
+| `Data_Coverage_2023` | float | `Avail_Weight / 100` |
+| `Data_Coverage_2025` | float | Share of metric weight backed by non-null values |
+| `Primary_Driver` | str | Heuristic label on `Score_Gap` direction |
+| `Action_Flag` | str | `LEAD`, `REVIEW`, `WATCH`, `DROP` |
+
+Columns are omitted gracefully if the source data doesn't support them
+(e.g. `Data_Coverage_2023` is `NaN` if `Avail_Weight` is absent).
+
+### Smoke tests
+
+```bash
+python tests/test_dual_score_table.py
+# or
+pytest tests/test_dual_score_table.py
+```
