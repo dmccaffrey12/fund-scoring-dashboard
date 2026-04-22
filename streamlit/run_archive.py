@@ -161,6 +161,7 @@ def create_run_archive(
     notes: Optional[str] = None,
     overwrite: bool = False,
     update_latest: bool = True,
+    preflight: str = "off",
 ) -> str:
     """
     Create a dated run archive and return the directory path.
@@ -168,6 +169,15 @@ def create_run_archive(
     If `table` is supplied it is used verbatim (useful for tests and for
     archiving a pre-built DataFrame). Otherwise the table is built from the
     supplied input paths via `build_dual_score_table`.
+
+    `preflight` controls whether the raw YCharts exports are validated
+    before the dual-score table is built:
+        "off"    — skip validation (default)
+        "warn"   — run validation, persist the report, never raise
+        "strict" — run validation, raise ValueError on any error finding
+
+    The intake report (when run) is written to
+    `validation/intake_report.json` alongside the usual validation file.
     """
     resolved_date = _resolve_run_date(run_date)
     target = _run_dir(runs_dir, resolved_date)
@@ -182,6 +192,21 @@ def create_run_archive(
 
     for sub in RUN_LAYOUT.values():
         os.makedirs(os.path.join(target, sub), exist_ok=True)
+
+    intake_report: Optional[Dict[str, Any]] = None
+    intake_report_path: Optional[str] = None
+    if preflight != "off" and table is None:
+        from ycharts_intake import preflight_for_archive  # local import
+        intake_report = preflight_for_archive(
+            path_2025=path_2025,
+            path_2023=path_2023,
+            strict=(preflight == "strict"),
+        )
+        intake_report_path = os.path.join(
+            target, RUN_LAYOUT["validation"], "intake_report.json"
+        )
+        with open(intake_report_path, "w") as f:
+            json.dump(intake_report, f, indent=2, sort_keys=True, default=str)
 
     if table is None:
         table = build_dual_score_table(
@@ -221,6 +246,15 @@ def create_run_archive(
             },
         },
         "notes": notes,
+        "preflight": {
+            "mode": preflight,
+            "ran": intake_report is not None,
+            "failed": bool(intake_report and intake_report.get("failed")),
+            "report_relative_path": (
+                os.path.relpath(intake_report_path, target)
+                if intake_report_path else None
+            ),
+        },
     }
     metadata_path = os.path.join(target, RUN_LAYOUT["metadata"], METADATA_NAME)
     with open(metadata_path, "w") as f:
@@ -356,6 +390,7 @@ def _cmd_create(args: argparse.Namespace) -> int:
         notes=args.notes,
         overwrite=args.overwrite,
         update_latest=not args.no_update_latest,
+        preflight=args.preflight,
     )
     print(f"Created run archive: {target}")
     return 0
@@ -410,6 +445,12 @@ def _cli() -> None:
                           help="Replace an existing run folder for the same date.")
     p_create.add_argument("--no-update-latest", action="store_true",
                           help="Do not update runs/latest.json.")
+    p_create.add_argument(
+        "--preflight", default="off",
+        choices=["off", "warn", "strict"],
+        help="Validate raw YCharts exports before archiving. "
+             "'strict' aborts on any error finding.",
+    )
     p_create.set_defaults(func=_cmd_create)
 
     p_list = sub.add_parser("list", help="List available run dates.")
