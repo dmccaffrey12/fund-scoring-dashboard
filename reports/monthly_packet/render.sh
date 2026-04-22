@@ -63,7 +63,11 @@ cd "${REPO_ROOT}"
 
 QMD="reports/monthly_packet/monthly_packet.qmd"
 if [[ -n "${OUT_PATH}" ]]; then
-  exec quarto render "${QMD}" --output "${OUT_PATH}" "${EXTRA_ARGS[@]}"
+  quarto render "${QMD}" "${EXTRA_ARGS[@]}"
+  DEFAULT_OUT="${REPO_ROOT}/reports/monthly_packet/monthly_packet.html"
+  mkdir -p "$(dirname "${OUT_PATH}")"
+  cp "${DEFAULT_OUT}" "${OUT_PATH}"
+  echo "Copied packet to ${OUT_PATH}"
 else
   exec quarto render "${QMD}" "${EXTRA_ARGS[@]}"
 fi
