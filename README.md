@@ -247,6 +247,7 @@ Sheets included:
 | `Disagreement_List` | Funds where 2023 and 2025 systems disagree (|Score_Gap| ≥ 10 or differing bands). |
 | `What_Changed` *(if comparison exists)* | Headline month-over-month metrics, sourced from `run_comparison`. |
 | `Score_Movers` / `Band_Changes` / `Quadrant_Changes` / `Action_Flag_Changes` / `New_Funds` / `Removed_Funds` *(if comparison exists)* | Detailed change tables carried over from the comparison bundle. |
+| `Model_Summary` / `Model_Holdings` / `Model_Review_List` / `Research_Candidates` / `Replacement_Candidates` *(if the model-holdings overlay exists)* | Committee overlay artifacts — see the **Model Holdings Overlay** section below. |
 
 STRONG / REVIEW / WEAK band cells are conditionally shaded (green /
 yellow / red) and every dataset is a native Excel Table so sorting and
@@ -259,6 +260,123 @@ from excel_audit_export import build_audit_workbook
 run = load_latest_run()
 build_audit_workbook(run=run, out_path="/tmp/fundscore_audit.xlsx")
 ```
+
+## Model Holdings Overlay
+
+`streamlit/model_holdings_overlay.py` joins current model portfolio
+holdings against an archived dual-score table and emits committee-review
+artifacts. The overlay is **a lens on top of the scored fund universe —
+not part of the scoring methodology.** The 2023 and 2025 scores remain
+separately reviewable so committee members can see where the two systems
+agree and where they disagree.
+
+### Expected CSV schema
+
+Required columns:
+
+| Column | Type | Notes |
+|--------|------|-------|
+| `Model_Name`   | str   | Free-text model label (e.g. "Moderate Growth"). |
+| `Symbol`       | str   | Ticker; join key against the dual-score table. |
+| `Target_Weight`| numeric or `"NN%"` | Percent or fractional. Per-model totals should sum to ~100%. |
+
+Optional columns (preserved on the scorecard output if provided):
+`Fund_Name`, `Sleeve`, `Status`, `Internal_Category`, `Notes`.
+
+### Intake validation
+
+```bash
+cd streamlit
+
+# Structure-only validation.
+python model_holdings_intake.py --path my_models.csv
+
+# Validate + report coverage against an archived dual-score table.
+python model_holdings_intake.py \
+    --path my_models.csv \
+    --dual-score-table runs/2026-04-30/data/dual_score_table.csv
+```
+
+Surfaces errors (missing required columns, duplicate `Model_Name+Symbol`
+pairs, unparseable weights, blank symbols) and warnings (per-model total
+weights outside ±2% of 100%, low universe coverage).
+
+### Overlay outputs
+
+Artifacts are persisted under `runs/YYYY-MM-DD/model_holdings/`:
+
+| File | Contents |
+|------|----------|
+| `model_holdings_scorecard.csv` | One row per holding joined to the dual scores, plus an `Overlay_Action` flag (see below). |
+| `model_summary.csv` | One row per model with target-weighted 2023 / 2025 scores, coverage, and band / quadrant / action weight shares. |
+| `current_holdings_review.csv` | Weak links — every holding that is *not* High Conviction, sorted by priority (replacement first). |
+| `research_candidates.csv` | Top-scoring unheld funds (STRONG in at least one system), ranked by Consensus_Rank. |
+| `replacement_candidates.csv` | Same-category replacement suggestions for each weak/weak current holding (top 3 per category). |
+| `overlay_metadata.json` | Action-flag counts, model count, universe size. |
+
+### Overlay action flags
+
+`Overlay_Action` on the scorecard combines the 2023 and 2025 score bands
+without collapsing their disagreement:
+
+| Flag | When |
+|------|------|
+| `High_Conviction_Hold` | Held and STRONG in **both** systems. |
+| `Performance_Led_Hold_Review_Quality` | Held, STRONG in 2023 but weaker in 2025 — performance track record is there, quality/risk story is not. |
+| `Quality_Led_Hold_Review_Patience` | Held, STRONG in 2025 but weaker in 2023 — quality metrics look good, performance track record hasn't caught up. |
+| `Replacement_Candidate` | Held but WEAK in either system — committee attention warranted. |
+| `Review_Missing_Score` | Held but not in the scored fund universe (ticker change, share-class quirk, or legitimately unscored). |
+| `Research_Candidate` | Not held today but scores STRONG in at least one system — surfaced on `research_candidates.csv`. |
+
+### Share-class alias reconciliation
+
+YCharts' duplicate-removal step keeps a single representative per fund, so a
+model may record one share class (e.g. `PRBLX`) while the scored universe
+contains another (e.g. `PRILX`). The overlay applies an alias layer before
+joining so the committee-facing `Symbol` in the model library is preserved
+while the score join happens against a reconciled ticker.
+
+- **Default map** (`streamlit/config/symbol_aliases.csv`, also baked into
+  `symbol_aliases.DEFAULT_ALIASES`): `PRBLX -> PRILX`, `GSTKX -> GSIKX`,
+  `PONPX -> PIMIX`, `FECMX -> FEMKX`.
+- **Extend without code changes** by editing that CSV — required columns are
+  `Original_Symbol`, `Scoring_Symbol`; `Reason` is free-text for audit.
+- **Override from the CLI** via `--alias-csv path/to/extra.csv`; entries in
+  the extra CSV merge on top of the defaults.
+- **Override from library code** by passing `alias_map=...` to
+  `build_model_overlay` or `validate_model_holdings_*`.
+
+The scorecard carries **both** `Symbol` (original, committee-facing) and
+`Scoring_Symbol` (resolved, used for the join) along with an `Alias_Applied`
+flag. `replacement_candidates.csv` surfaces `Current_Scoring_Symbol` alongside
+`Current_Symbol`. Intake coverage reporting counts alias-applied rows
+separately from still-unscored symbols, and the overlay metadata records
+every `Original -> Scoring` pair that fired.
+
+### CLI / library flow
+
+```python
+from model_holdings_overlay import build_model_overlay, write_overlay
+from run_archive import load_run, run_overlay_dir
+from symbol_aliases import load_default_aliases
+import pandas as pd
+
+run = load_run("2026-04-30")
+holdings = pd.read_csv("my_models.csv")
+result = build_model_overlay(
+    holdings, run["table"],
+    alias_map=load_default_aliases(),   # omit to use defaults automatically
+)
+write_overlay(result, run_overlay_dir("streamlit/runs", "2026-04-30"))
+```
+
+In the Streamlit **Monthly Workflow** page, the overlay upload appears as
+*step 4b* after the run archive has been created: upload the holdings
+CSV, run validation, build the overlay, and view **Model Stack-Up**,
+**Current Holdings Review**, **Weak Links**, and **Top Candidates Not
+Used** tabs. The subsequent Excel audit workbook automatically picks up
+the overlay artifacts and adds the five `Model_*` / `Research_*` /
+`Replacement_*` sheets.
 
 ## Validation Targets
 - SCHD (Passive): ~69.6

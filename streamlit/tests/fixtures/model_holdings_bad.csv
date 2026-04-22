@@ -1,0 +1,6 @@
+Model_Name,Symbol,Target_Weight
+Moderate,AAA,40%
+Moderate,AAA,35%
+Moderate,BBB,not-a-number
+Moderate,,20%
+Aggressive,CCC,50%

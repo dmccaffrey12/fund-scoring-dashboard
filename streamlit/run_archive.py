@@ -51,6 +51,12 @@ VALIDATION_NAME = "validation_report.json"
 
 SCORE_SYSTEM_VERSION = "dual-2023-combined+2025-split"
 
+# Subdirectory used by the optional model-holdings overlay (see
+# model_holdings_overlay.py). Lives under the run directory so overlay
+# artifacts are archived alongside the dual-score table they were joined
+# against.
+MODEL_OVERLAY_SUBDIR = "model_holdings"
+
 
 # ---------------------------------------------------------------------------
 # Hashing helpers
@@ -149,6 +155,11 @@ def _resolve_run_date(run_date: Optional[str]) -> str:
 
 def _run_dir(runs_dir: str, run_date: str) -> str:
     return os.path.join(runs_dir, run_date)
+
+
+def run_overlay_dir(runs_dir: str, run_date: str) -> str:
+    """Canonical absolute path for this run's model-holdings overlay dir."""
+    return os.path.join(_run_dir(runs_dir, run_date), MODEL_OVERLAY_SUBDIR)
 
 
 def create_run_archive(

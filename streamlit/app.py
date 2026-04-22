@@ -2244,6 +2244,136 @@ elif page == "Monthly Workflow":
         with tab4:
             st.dataframe(previews["disagreement"], use_container_width=True, hide_index=True)
 
+    # ---- Step 4b: Model Holdings Overlay (optional) ----
+    st.markdown("### 4b · Model Holdings Overlay (optional)")
+    st.caption(
+        "Upload current model portfolio holdings to see how they stack up "
+        "against the scored fund universe. The overlay is a lens on top of "
+        "the dual-score table — not part of the scoring methodology. "
+        "Expected columns: **Model_Name**, **Symbol**, **Target_Weight** "
+        "(percent or fraction). Optional: Fund_Name, Sleeve, Status, "
+        "Internal_Category, Notes."
+    )
+    _ss.setdefault("mw_models_report", None)
+    _ss.setdefault("mw_models_tmpdir", None)
+    _ss.setdefault("mw_models_path", None)
+    _ss.setdefault("mw_overlay_date", None)
+
+    mh_file = st.file_uploader(
+        "Current model holdings (CSV)",
+        type=["csv"], key="mw_file_models",
+    )
+
+    active_mh_date = _ss.get("mw_last_run_date")
+    if active_mh_date is None:
+        _mh_runs = workflow_ui.available_runs()
+        if _mh_runs:
+            active_mh_date = _mh_runs[-1]
+
+    mh_cols = st.columns([1, 1])
+    with mh_cols[0]:
+        validate_mh_btn = st.button(
+            "Validate Holdings",
+            disabled=(mh_file is None or active_mh_date is None),
+            key="mw_btn_validate_models",
+        )
+    with mh_cols[1]:
+        build_overlay_btn = st.button(
+            "Build Overlay Artifacts",
+            disabled=(
+                mh_file is None or active_mh_date is None
+                or _ss.get("mw_models_report") is None
+                or _ss.get("mw_models_report", {}).get("failed", True)
+            ),
+            key="mw_btn_build_overlay",
+            type="primary",
+        )
+
+    if validate_mh_btn and mh_file is not None and active_mh_date:
+        workflow_ui.cleanup_tmp(_ss.get("mw_models_tmpdir"))
+        path, tmp = workflow_ui.persist_model_holdings_upload(mh_file.getvalue())
+        _ss["mw_models_tmpdir"] = tmp
+        _ss["mw_models_path"] = path
+        try:
+            run_for_intake = _load_run(active_mh_date)
+            _ss["mw_models_report"] = workflow_ui.run_model_holdings_intake(
+                path, dual_table=run_for_intake["table"],
+            )
+        except Exception as exc:
+            st.error(f"Model holdings validation failed: {exc}")
+
+    mh_report = _ss.get("mw_models_report")
+    if mh_report:
+        counts = mh_report.get("finding_counts", {})
+        status = "FAIL" if mh_report.get("failed") else "PASS"
+        st.markdown(
+            f"**Holdings status:** `{status}` · errors {counts.get('error', 0)} · "
+            f"warnings {counts.get('warning', 0)} · info {counts.get('info', 0)}"
+        )
+        coverage = mh_report.get("coverage") or {}
+        if coverage.get("available"):
+            st.caption(
+                f"Universe coverage: {coverage['covered_rows']:,}/"
+                f"{coverage['total_rows']:,} rows "
+                f"({coverage['coverage_rate'] * 100:.1f}%)  ·  "
+                f"models: {len(mh_report.get('model_names') or [])}"
+            )
+        with st.expander("Holdings validation details"):
+            st.code(mh_report.get("summary_text", ""), language="text")
+
+    if build_overlay_btn and _ss.get("mw_models_path") and active_mh_date:
+        try:
+            with st.spinner("Building model holdings overlay…"):
+                overlay = workflow_ui.generate_model_overlay_for_run(
+                    holdings_path=_ss["mw_models_path"],
+                    run_date=active_mh_date,
+                )
+            _ss["mw_overlay_date"] = active_mh_date
+            st.success(
+                f"Overlay generated for {active_mh_date} · "
+                f"{overlay['metadata'].get('model_count', 0)} model(s) · "
+                f"{overlay['metadata'].get('holding_row_count', 0)} holdings · "
+                f"path `{overlay['path']}`"
+            )
+        except Exception as exc:
+            st.error(f"Overlay build failed: {exc}")
+
+    overlay_date = _ss.get("mw_overlay_date") or active_mh_date
+    if overlay_date:
+        loaded = workflow_ui.load_model_overlay_for_run(overlay_date)
+        if loaded is not None:
+            st.markdown(f"**Overlay artifacts for {overlay_date}:**")
+            tab_s, tab_r, tab_w, tab_c = st.tabs([
+                "Model Stack-Up", "Current Holdings Review",
+                "Weak Links", "Top Candidates Not Used",
+            ])
+            with tab_s:
+                st.dataframe(
+                    loaded.get("summary", pd.DataFrame()),
+                    use_container_width=True, hide_index=True,
+                )
+            with tab_r:
+                review_df = loaded.get("current_review", pd.DataFrame())
+                st.dataframe(review_df, use_container_width=True, hide_index=True)
+            with tab_w:
+                scorecard_df = loaded.get("scorecard", pd.DataFrame())
+                weak = scorecard_df[
+                    scorecard_df["Overlay_Action"].isin(
+                        ["Replacement_Candidate", "Review_Missing_Score"]
+                    )
+                ] if not scorecard_df.empty else scorecard_df
+                st.dataframe(weak, use_container_width=True, hide_index=True)
+            with tab_c:
+                st.dataframe(
+                    loaded.get("research_candidates", pd.DataFrame()),
+                    use_container_width=True, hide_index=True,
+                )
+                st.caption("Same-category replacement suggestions:")
+                st.dataframe(
+                    loaded.get("replacement_candidates", pd.DataFrame()),
+                    use_container_width=True, hide_index=True,
+                )
+
     # ---- Step 5: Archive list + comparison ----
     st.markdown("### 5 · Archived Runs & Comparison")
     runs_available = workflow_ui.available_runs()
