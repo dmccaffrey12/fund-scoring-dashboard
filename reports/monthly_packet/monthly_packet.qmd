@@ -133,9 +133,8 @@ from packet_data import (  # noqa: E402
     dual_lens_matrix,
     quadrant_counts,
     metadata_banner,
-    model_stackup,
-    action_flag_weight_matrix,
-    weak_holdings,
+    current_holdings_scorecard,
+    holdings_watch_list,
     replacement_candidates_for_committee,
     research_candidates_for_committee,
     alias_notes,
@@ -161,6 +160,8 @@ validation = inputs.validation or {}
 intake = inputs.intake
 comparison = inputs.comparison
 overlay = inputs.model_overlay
+prior_overlay = inputs.prior_model_overlay
+prior_scorecard = prior_overlay.scorecard if prior_overlay is not None else None
 banner = metadata_banner(metadata)
 ```
 
@@ -195,444 +196,171 @@ Markdown("  \n".join(lines))
 #| tags: [exec-summary]
 bullets = []
 
-total = int(len(table))
-bullets.append(f"**Universe:** {total:,} scored funds in the dual-lens table.")
-
-band_counts_25 = validation.get("band_counts_2025") or (
-    table["Score_Band_2025"].value_counts(dropna=False).to_dict()
-    if "Score_Band_2025" in table.columns else {}
-)
-band_counts_23 = validation.get("band_counts_2023") or (
-    table["Score_Band_2023"].value_counts(dropna=False).to_dict()
-    if "Score_Band_2023" in table.columns else {}
-)
-
-def _band_summary(counts, label):
-    if not counts:
-        return None
-    strong = int(counts.get("STRONG", 0))
-    review = int(counts.get("REVIEW", 0))
-    weak = int(counts.get("WEAK", 0))
-    total = strong + review + weak
-    pct = strong / total * 100 if total else 0
-    return (
-        f"**{label}:** {total:,} scored — "
-        f"🟢 {strong:,} STRONG ({pct:.1f}%) · 🟡 {review:,} REVIEW · 🔴 {weak:,} WEAK."
-    )
-
-for msg in filter(None, [
-    _band_summary(band_counts_25, "2025 Quality/Risk Lens"),
-    _band_summary(band_counts_23, "2023 Performance Lens"),
-]):
-    bullets.append(msg)
-
-if overlay is not None and not overlay.summary.empty:
-    s = overlay.summary
-    n_models = int(s["Model_Name"].nunique())
+if overlay is not None and not overlay.scorecard.empty:
+    sc = overlay.scorecard
+    n_models = int(sc["Model_Name"].nunique())
+    n_holdings = int(len(sc))
     bullets.append(
-        f"**Model coverage:** {n_models} models reviewed; "
-        f"target-weighted scores shown per model in **Model Stack-Up**."
+        f"**Model holdings covered:** {n_models} models · "
+        f"{n_holdings} current holdings (including alias-resolved rows)."
     )
-    meta = overlay.metadata or {}
-    flags = meta.get("action_flag_counts", {}) or {}
-    if flags:
-        parts = []
-        for key in ("High_Conviction_Hold", "Performance_Led_Hold_Review_Quality",
-                    "Quality_Led_Hold_Review_Patience", "Replacement_Candidate",
-                    "Review_Missing_Score"):
-            if key in flags:
-                label = key.replace("_", " ")
-                parts.append(f"{label}: {int(flags[key])}")
-        if parts:
-            bullets.append("**Holding-level action flags:** " + " · ".join(parts))
-    repl = int(meta.get("replacement_row_count", 0))
-    research = int(meta.get("research_candidate_count", 0))
-    if repl or research:
+else:
+    bullets.append(
+        "_No model-holdings overlay archived this cycle — the packet "
+        "cannot answer the holdings-still-acceptable question without it._"
+    )
+
+watch = holdings_watch_list(
+    overlay.scorecard if overlay is not None else pd.DataFrame(),
+    prior_scorecard,
+) if overlay is not None else pd.DataFrame()
+if overlay is not None:
+    n_watch = int(len(watch))
+    if n_watch:
         bullets.append(
-            f"**Committee queue:** {repl:,} replacement candidate rows · "
-            f"{research:,} research candidates surfaced from the broader universe."
+            f"**Holdings requiring review:** {n_watch} (see Watch List below)."
         )
-else:
+    else:
+        bullets.append(
+            "**Holdings requiring review:** none triggered this cycle."
+        )
+
+if comparison is not None and overlay is not None and not overlay.scorecard.empty:
+    held = set(overlay.scorecard["Symbol"].dropna().astype(str))
+    if not comparison.score_movers.empty and "Symbol" in comparison.score_movers.columns:
+        mv = comparison.score_movers
+        held_movers = mv[mv["Symbol"].astype(str).isin(held)]
+        band_ch = comparison.band_changes
+        held_band = band_ch[band_ch["Symbol"].astype(str).isin(held)] if (
+            not band_ch.empty and "Symbol" in band_ch.columns
+        ) else pd.DataFrame()
+        bullets.append(
+            f"**Material changes since prior run "
+            f"({comparison.prior_date} → {comparison.latest_date}):** "
+            f"{len(held_movers):,} holding-level score moves · "
+            f"{len(held_band):,} holding-level band changes."
+        )
+elif comparison is None:
     bullets.append(
-        "_No model holdings overlay present — committee discussion below "
-        "is universe-wide only._"
+        "_No prior-run comparison archived — month-over-month deltas unavailable._"
     )
 
-if comparison is not None:
-    s = comparison.summary
-    bullets.append(
-        f"**Month-over-month:** comparing **{s.get('latest_run_date')}** against "
-        f"**{s.get('prior_run_date')}** — "
-        f"{int(s.get('new_fund_count', 0)):,} new, "
-        f"{int(s.get('removed_fund_count', 0)):,} removed, "
-        f"{int(s.get('quadrant_change_count', 0)):,} quadrant changes."
-    )
-else:
-    bullets.append("_No prior-run comparison found — see **What Changed** for the placeholder._")
+if overlay is not None:
+    meta = overlay.metadata or {}
+    applied = int(meta.get("alias_applied_rows", 0))
+    if applied:
+        bullets.append(
+            f"**Data-quality notes:** {applied} holding row(s) required "
+            f"share-class alias resolution (see appendix)."
+        )
+    missing = int((overlay.scorecard["Overlay_Action"] == "Review_Missing_Score").sum()) \
+        if not overlay.scorecard.empty else 0
+    if missing:
+        bullets.append(
+            f"**Coverage gap:** {missing} holding(s) were not matched to the "
+            f"scored universe — flagged `Review_Missing_Score` below."
+        )
 
 Markdown("\n\n".join(f"- {b}" for b in bullets))
 ```
 
-# Model Stack-Up
+The packet answers one question: **are our current model holdings still
+acceptable?** It does not attempt to recommend replacements or refresh the
+research pipeline — those live in the analytics workbench, not the monthly
+governance record.
+
+# Current Model Holdings Scorecard
 
 ```{python}
-#| tags: [model-stackup-intro]
-if overlay is None or overlay.summary.empty:
+#| tags: [scorecard-intro]
+if overlay is None or overlay.scorecard.empty:
     display(Markdown(
         "> ⚠️ No model-holdings overlay archived for this run. "
         "Upload a model-library CSV via the Streamlit monthly workflow page "
         "and re-archive to populate this section."
     ))
 else:
-    display(Markdown(
-        "Target-weighted average scores for each model, plus the weight share "
-        "in each action-flag bucket. The two scores are kept **separate** — "
-        "a model's 2023 and 2025 averages can diverge, and committee discussion "
-        "should treat that divergence as a signal rather than a noise."
-    ))
-```
-
-```{python}
-#| tags: [model-stackup-table]
-if overlay is not None and not overlay.summary.empty:
-    view = model_stackup(overlay.summary)
-    display(view)
-```
-
-```{python}
-#| tags: [model-weighted-scores-chart]
-if overlay is not None and not overlay.summary.empty and {
-    "Model_Name", "Weighted_Score_2023", "Weighted_Score_2025",
-}.issubset(overlay.summary.columns):
-    s = overlay.summary.copy()
-    s = s.dropna(subset=["Weighted_Score_2023", "Weighted_Score_2025"], how="all")
-    s = s.sort_values("Model_Name", kind="stable")
-    if not s.empty:
-        idx = np.arange(len(s))
-        width = 0.38
-        fig, ax = plt.subplots(figsize=(8.2, max(3.2, 0.42 * len(s) + 1.3)))
-        ax.barh(idx - width / 2, s["Weighted_Score_2023"].fillna(0),
-                height=width, color=PACKET_PALETTE["primary"],
-                label="2023 Performance")
-        ax.barh(idx + width / 2, s["Weighted_Score_2025"].fillna(0),
-                height=width, color=PACKET_PALETTE["accent"],
-                label="2025 Quality/Risk")
-        ax.set_yticks(idx)
-        ax.set_yticklabels(s["Model_Name"])
-        ax.invert_yaxis()
-        ax.set_xlabel("Target-weighted average score (0–100)")
-        ax.set_title("Target-weighted model scores by lens", loc="left")
-        ax.axvline(80, color=PACKET_PALETTE["muted"], lw=0.5, ls="--", alpha=0.7)
-        ax.axvline(60, color=PACKET_PALETTE["muted"], lw=0.4, ls=":", alpha=0.6)
-        ax.set_xlim(0, 105)
-        ax.grid(axis="y", visible=False)
-        ax.legend(loc="lower right")
-        plt.tight_layout()
-        display(fig)
-        plt.close(fig)
-```
-
-# Action Flag Breakdown
-
-```{python}
-#| tags: [action-flag-intro]
-if overlay is None or overlay.summary.empty:
-    display(Markdown("> ⚠️ Action-flag breakdown unavailable without the model overlay."))
-else:
-    display(Markdown(
-        "Weight share (%) of each model's portfolio by committee action flag. "
-        "*High Conviction Hold* = strong on both lenses. *Replacement Candidate* "
-        "= weak on at least one lens and failing on the other. *Performance-Led* "
-        "and *Quality-Led* rows are the dual-lens disagreements that deserve "
-        "the most narrative discussion."
-    ))
-```
-
-```{python}
-#| tags: [action-flag-matrix]
-if overlay is not None and not overlay.summary.empty:
-    matrix = action_flag_weight_matrix(overlay.summary)
-    if matrix.empty:
-        display(Markdown("_No action-flag weight columns present in the summary._"))
+    if prior_scorecard is not None:
+        display(Markdown(
+            "One row per current holding, grouped by model. Both scoring "
+            "lenses are kept separate. `Δ` columns show the move versus the "
+            "prior run; blank when the holding is new or the prior run had "
+            "no score."
+        ))
     else:
-        display(matrix)
+        display(Markdown(
+            "One row per current holding, grouped by model. Both scoring "
+            "lenses are kept separate. `Δ` columns are blank because no "
+            "prior-run overlay is archived for comparison."
+        ))
 ```
 
 ```{python}
-#| tags: [action-flag-chart]
-if overlay is not None and not overlay.summary.empty:
-    matrix = action_flag_weight_matrix(overlay.summary)
-    if not matrix.empty:
-        palette = {
-            "High Conviction Hold":             PACKET_PALETTE["positive"],
-            "Performance-Led / Review Quality": PACKET_PALETTE["primary"],
-            "Quality-Led / Review Patience":    PACKET_PALETTE["caution"],
-            "Replacement Candidate":            PACKET_PALETTE["negative"],
-            "Unscored / Coverage Gap":          PACKET_PALETTE["neutral"],
-        }
-        fig, ax = plt.subplots(figsize=(8.2, max(3.0, 0.5 * len(matrix) + 1.4)))
-        bottom = np.zeros(len(matrix))
-        y = np.arange(len(matrix))
-        for col in matrix.columns:
-            vals = matrix[col].fillna(0).to_numpy()
-            ax.barh(y, vals, left=bottom, height=0.62,
-                    color=palette.get(col, "#bbbbbb"),
-                    edgecolor="#ffffff", linewidth=0.6, label=col)
-            bottom = bottom + vals
-        ax.set_yticks(y)
-        ax.set_yticklabels(matrix.index)
-        ax.invert_yaxis()
-        ax.set_xlabel("Weight share (%)")
-        ax.set_title("Action-flag weight mix by model", loc="left")
-        ax.grid(axis="y", visible=False)
-        ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.12),
-                  ncol=3, fontsize=8, frameon=False)
-        plt.tight_layout()
-        display(fig)
-        plt.close(fig)
-```
-
-# Model-by-Model Review
-
-```{python}
-#| tags: [model-by-model-intro]
-if overlay is None or overlay.scorecard.empty:
-    display(Markdown("> ⚠️ Holding-level scorecard unavailable without the model overlay."))
-else:
-    display(Markdown(
-        "Each model's full holdings enriched with dual-lens scores, bands, "
-        "quadrant, and the overlay's committee action flag. Rows are sorted "
-        "by consensus rank (best first); unscored holdings sink to the bottom."
-    ))
-```
-
-```{python}
-#| tags: [model-by-model-tables]
+#| tags: [scorecard-table]
 if overlay is not None and not overlay.scorecard.empty:
-    sc = overlay.scorecard.copy()
-    show_cols = [c for c in [
-        "Symbol", "Scoring_Symbol", "Alias_Applied",
-        "Name", "Category", "Fund_Type", "Target_Weight_Pct",
-        "Score_2023_Final", "Score_2025_Final",
-        "Score_Band_2023", "Score_Band_2025", "Quadrant",
-        "Overlay_Action",
-    ] if c in sc.columns]
-    blocks = []
-    for model_name, block in sc.groupby("Model_Name", sort=True):
-        view = block[show_cols].copy()
-        for c in ("Score_2023_Final", "Score_2025_Final", "Target_Weight_Pct"):
-            if c in view.columns:
-                view[c] = view[c].round(1)
-        blocks.append(f"## {model_name}")
-        blocks.append(view.to_markdown(index=False))
-        blocks.append("")
-    display(Markdown("\n\n".join(blocks)))
+    board = current_holdings_scorecard(overlay.scorecard, prior_scorecard)
+    if board.empty:
+        display(Markdown("_No holdings to display._"))
+    else:
+        for model_name, block in board.groupby("Model_Name", sort=True):
+            display(Markdown(f"## {model_name}"))
+            view = block.drop(columns=["Model_Name"]).reset_index(drop=True)
+            # Only show prior/delta columns when some row has a value. Keeps
+            # the memo tight on first-month runs.
+            for c in ("Score_2023_Prior", "Score_2025_Prior", "Delta_2023", "Delta_2025"):
+                if c in view.columns and view[c].isna().all():
+                    view = view.drop(columns=[c])
+            display(view)
 ```
 
-# Replacement Candidates
+# Holdings Requiring Review
 
 ```{python}
-#| tags: [replacement-intro]
-if overlay is None or overlay.replacement_candidates.empty:
+#| tags: [watch-intro]
+if overlay is None or overlay.scorecard.empty:
     display(Markdown(
-        "> ✅ No replacement candidates surfaced this cycle. Either no current "
-        "holding is flagged `Replacement_Candidate` or the overlay didn't "
-        "produce a populated candidate pool."
+        "> ⚠️ Watch list unavailable without the model-holdings overlay."
     ))
 else:
     display(Markdown(
-        "For each current holding flagged `Replacement_Candidate`, the top "
-        "same-category alternates ranked by consensus. These are suggestions "
-        "to anchor committee discussion — not an automated buy list."
+        "Holdings that meet at least one of: weak on both lenses, materially "
+        "deteriorated since the prior run (≥ 10-point drop), band threshold "
+        "crossed in the wrong direction, or ≥ 15-point 2023-vs-2025 "
+        "disagreement. These are the rows the committee should speak to "
+        "explicitly before the meeting closes."
     ))
 ```
 
 ```{python}
-#| tags: [replacement-table]
-if overlay is not None and not overlay.replacement_candidates.empty:
-    display(replacement_candidates_for_committee(overlay.replacement_candidates, top_per_holding=3))
+#| tags: [watch-table]
+if overlay is not None and not overlay.scorecard.empty:
+    watch_df = holdings_watch_list(overlay.scorecard, prior_scorecard)
+    if watch_df.empty:
+        display(Markdown(
+            "> ✅ **No holdings met a review trigger this cycle.** Current "
+            "positions are within tolerance on bands, deltas, and dual-lens "
+            "agreement."
+        ))
+    else:
+        display(Markdown(
+            f"**{len(watch_df)} holding(s) triggered a review condition.**"
+        ))
+        display(watch_df)
 ```
 
-# Research Candidates
-
-```{python}
-#| tags: [research-intro]
-if overlay is None or overlay.research_candidates.empty:
-    display(Markdown(
-        "> ℹ️ No research candidates in the overlay output. A research "
-        "candidate is a high-consensus fund **not held** by any current "
-        "model — absence usually means the universe's top ideas are already "
-        "represented."
-    ))
-else:
-    display(Markdown(
-        "Top-ranked funds in the broader scored universe that are **not** "
-        "currently held by any model. Ordered by consensus rank — best ideas "
-        "first. These are candidates for deeper due diligence, not automatic "
-        "adds."
-    ))
-```
-
-```{python}
-#| tags: [research-table]
-if overlay is not None and not overlay.research_candidates.empty:
-    display(research_candidates_for_committee(overlay.research_candidates, top_n=25))
-```
-
-# Dual-Lens Universe Context
+# Dual-Lens Context
 
 ```{python}
 #| tags: [dual-lens-intro]
 Markdown(
-    "The overlay views above are filtered to held and candidate funds. The "
-    "sections below keep the full universe visible so the committee can see "
-    "what the ambient scoring environment looks like before drilling into "
-    "model specifics."
+    "A brief look at the scoring universe behind the holdings: the band "
+    "crosstab, and the subset of holdings whose two lenses disagree "
+    "materially. This is context for interpreting the scorecard above — "
+    "not a replacement research workbench."
 )
 ```
 
-## Top 50 Consensus Ideas
-
-```{python}
-#| tags: [consensus]
-top = top_by_consensus(table, top_n=TOP_N)
-if top.empty:
-    display(Markdown("> ⚠️ Consensus view unavailable — need `Consensus_Rank` or both score columns."))
-else:
-    cols = [c for c in [
-        "Symbol", "Name", "Category", "Fund_Type",
-        "Score_2023_Final", "Score_2025_Final", "Consensus_Rank",
-        "Score_Band_2023", "Score_Band_2025", "Action_Flag",
-    ] if c in top.columns]
-    view = top[cols].copy()
-    for c in ("Score_2023_Final", "Score_2025_Final"):
-        if c in view.columns:
-            view[c] = view[c].round(1)
-    display(view)
-```
-
-## Top 50 by Performance Lens (2023)
-
-```{python}
-#| tags: [perf-2023]
-top23 = top_by_score(table, "Score_2023_Final", top_n=TOP_N)
-if top23.empty:
-    display(Markdown("> ⚠️ 2023 scores missing — performance lens unavailable."))
-else:
-    cols = [c for c in [
-        "Symbol", "Name", "Category", "Fund_Type",
-        "Score_2023_Final", "Score_Band_2023", "Data_Coverage_2023",
-    ] if c in top23.columns]
-    view = top23[cols].copy()
-    if "Score_2023_Final" in view.columns:
-        view["Score_2023_Final"] = view["Score_2023_Final"].round(1)
-    if "Data_Coverage_2023" in view.columns:
-        view["Data_Coverage_2023"] = view["Data_Coverage_2023"].round(2)
-    display(view)
-```
-
-## Top 50 by Quality/Risk Lens (2025)
-
-```{python}
-#| tags: [quality-2025]
-top25 = top_by_score(table, "Score_2025_Final", top_n=TOP_N)
-if top25.empty:
-    display(Markdown("> ⚠️ 2025 scores missing — quality/risk lens unavailable."))
-else:
-    cols = [c for c in [
-        "Symbol", "Name", "Category", "Fund_Type",
-        "Score_2025_Final", "Score_Band_2025", "Data_Coverage_2025",
-    ] if c in top25.columns]
-    view = top25[cols].copy()
-    if "Score_2025_Final" in view.columns:
-        view["Score_2025_Final"] = view["Score_2025_Final"].round(1)
-    if "Data_Coverage_2025" in view.columns:
-        view["Data_Coverage_2025"] = view["Data_Coverage_2025"].round(2)
-    display(view)
-```
-
-## Disagreement List
-
-```{python}
-#| tags: [disagreements]
-disagree = disagreement_list(table, min_gap=DISAGREEMENT_GAP)
-if disagree.empty:
-    display(Markdown(
-        f"> No funds meet the disagreement threshold "
-        f"(|Score_Gap| ≥ {DISAGREEMENT_GAP:.0f} or differing bands)."
-    ))
-else:
-    cols = [c for c in [
-        "Symbol", "Name", "Category", "Fund_Type",
-        "Score_2023_Final", "Score_2025_Final", "Score_Gap",
-        "Score_Band_2023", "Score_Band_2025", "Quadrant",
-        "Primary_Driver", "Action_Flag",
-    ] if c in disagree.columns]
-    view = disagree[cols].head(100).copy()
-    for c in ("Score_2023_Final", "Score_2025_Final", "Score_Gap"):
-        if c in view.columns:
-            view[c] = view[c].round(1)
-    view.index = view.index + 1
-    view.index.name = "Rank"
-    display(view)
-```
-
-Funds where the 2023 and 2025 lenses tell materially different stories. These
-are the ambient-universe analogue of the overlay's Performance-Led and
-Quality-Led action flags.
-
-## Dual-Lens Matrix
-
-```{python}
-#| tags: [dual-lens-scatter]
-if {"Score_2023_Final", "Score_2025_Final"}.issubset(table.columns):
-    plot_df = table.dropna(subset=["Score_2023_Final", "Score_2025_Final"])
-    fig, ax = plt.subplots(figsize=(8.2, 6.0))
-    ax.scatter(
-        plot_df["Score_2023_Final"], plot_df["Score_2025_Final"],
-        s=6, alpha=0.18, color=PACKET_PALETTE["primary"], rasterized=True,
-        label="Universe",
-    )
-    # Overlay currently-held scoring symbols when available.
-    if overlay is not None and not overlay.scorecard.empty:
-        held_syms = set(overlay.scorecard["Scoring_Symbol"].dropna().astype(str))
-        if held_syms and "Symbol" in plot_df.columns:
-            held_plot = plot_df[plot_df["Symbol"].astype(str).isin(held_syms)]
-            if not held_plot.empty:
-                ax.scatter(
-                    held_plot["Score_2023_Final"], held_plot["Score_2025_Final"],
-                    s=24, color=PACKET_PALETTE["negative"],
-                    edgecolor="#ffffff", linewidths=0.5,
-                    label="Currently held", zorder=3,
-                )
-    if "Consensus_Rank" in plot_df.columns:
-        top25_plot = plot_df.nsmallest(25, "Consensus_Rank")
-    else:
-        plot_df2 = plot_df.assign(_consensus=(plot_df["Score_2023_Final"] + plot_df["Score_2025_Final"]) / 2)
-        top25_plot = plot_df2.nlargest(25, "_consensus")
-    ax.scatter(
-        top25_plot["Score_2023_Final"], top25_plot["Score_2025_Final"],
-        s=42, facecolors="none", edgecolors=PACKET_PALETTE["positive"],
-        linewidths=1.2, label="Top 25 consensus", zorder=4,
-    )
-    for thr in (80,):
-        ax.axhline(thr, color=PACKET_PALETTE["muted"], lw=0.5, ls="--", alpha=0.7)
-        ax.axvline(thr, color=PACKET_PALETTE["muted"], lw=0.5, ls="--", alpha=0.7)
-    for thr in (60,):
-        ax.axhline(thr, color=PACKET_PALETTE["muted"], lw=0.4, ls=":", alpha=0.6)
-        ax.axvline(thr, color=PACKET_PALETTE["muted"], lw=0.4, ls=":", alpha=0.6)
-    ax.set_xlabel("2023 Performance score")
-    ax.set_ylabel("2025 Quality / Risk score")
-    ax.set_title("Dual-lens matrix — performance vs. quality", loc="left")
-    ax.set_xlim(0, 105)
-    ax.set_ylim(0, 115)
-    ax.legend(loc="lower right")
-    plt.tight_layout()
-    display(fig)
-    plt.close(fig)
-else:
-    display(Markdown("> ⚠️ Dual-lens scatter unavailable — both score columns required."))
-```
+## Band Matrix (universe)
 
 ```{python}
 #| tags: [dual-lens-table]
@@ -646,15 +374,47 @@ else:
 Rows = 2025 Quality/Risk band. Columns = 2023 Performance band.
 `STRONG / STRONG` is the committee's highest-conviction bucket.
 
+## Dual-Lens Disagreement — Current Holdings Only
+
 ```{python}
-#| tags: [quadrant-summary]
-if "Quadrant" in table.columns:
-    q = quadrant_counts(table).reset_index()
-    q.columns = ["Quadrant", "Count"]
-    display(q)
+#| tags: [holdings-disagreement]
+if overlay is None or overlay.scorecard.empty:
+    display(Markdown(
+        "> Dual-lens disagreement list defers to the broader universe when "
+        "no overlay is present; scroll to the appendix for the universe view."
+    ))
+else:
+    held_syms = set(overlay.scorecard["Symbol"].dropna().astype(str))
+    held_syms |= set(overlay.scorecard.get("Scoring_Symbol", pd.Series(dtype=str)).dropna().astype(str))
+    if not held_syms or "Symbol" not in table.columns:
+        display(Markdown("_No currently-held symbols to filter on._"))
+    else:
+        dis_all = disagreement_list(table, min_gap=DISAGREEMENT_GAP)
+        if dis_all.empty:
+            display(Markdown(
+                "_No universe funds meet the disagreement threshold this cycle._"
+            ))
+        else:
+            dis_held = dis_all[dis_all["Symbol"].astype(str).isin(held_syms)]
+            if dis_held.empty:
+                display(Markdown(
+                    "> ✅ None of the current model holdings show material "
+                    "2023-vs-2025 disagreement this cycle."
+                ))
+            else:
+                cols = [c for c in [
+                    "Symbol", "Name", "Category", "Fund_Type",
+                    "Score_2023_Final", "Score_2025_Final", "Score_Gap",
+                    "Score_Band_2023", "Score_Band_2025", "Quadrant",
+                ] if c in dis_held.columns]
+                view = dis_held[cols].reset_index(drop=True).copy()
+                for c in ("Score_2023_Final", "Score_2025_Final", "Score_Gap"):
+                    if c in view.columns:
+                        view[c] = view[c].round(1)
+                display(view)
 ```
 
-# What Changed
+# What Changed — Holdings Impact
 
 ```{python}
 #| tags: [what-changed]
@@ -671,85 +431,52 @@ else:
     s = comparison.summary
     header = (
         f"**Comparison window:** `{s.get('prior_run_date')}` → "
-        f"`{s.get('latest_run_date')}`  \n"
-        f"Latest universe: **{int(s.get('latest_row_count', 0)):,}** funds · "
-        f"Prior universe: **{int(s.get('prior_row_count', 0)):,}** funds."
+        f"`{s.get('latest_run_date')}`. The tables below are filtered to "
+        f"current model holdings — full universe-level change tables are "
+        f"kept in the archive under "
+        f"`comparison/prior_{s.get('prior_run_date')}/`."
     )
     display(Markdown(header))
 ```
 
 ```{python}
-#| tags: [change-headlines]
-if comparison is not None:
-    s = comparison.summary
-    rows = [
-        ("New funds", int(s.get("new_fund_count", 0))),
-        ("Removed funds", int(s.get("removed_fund_count", 0))),
-        ("Quadrant changes", int(s.get("quadrant_change_count", 0))),
-        ("Action flag changes", int(s.get("action_flag_change_count", 0))),
-    ]
-    mover_counts = s.get("score_mover_count_by_metric") or {}
-    for metric, n in sorted(mover_counts.items()):
-        rows.append((f"Movers · {metric}", int(n)))
-    band_counts = s.get("band_change_count_by_column") or {}
-    for col, n in sorted(band_counts.items()):
-        rows.append((f"Band changes · {col}", int(n)))
-    display(pd.DataFrame(rows, columns=["Change", "Count"]))
+#| tags: [holding-score-moves]
+if comparison is not None and overlay is not None and not overlay.scorecard.empty:
+    held = set(overlay.scorecard["Symbol"].dropna().astype(str))
+    held |= set(overlay.scorecard.get("Scoring_Symbol", pd.Series(dtype=str)).dropna().astype(str))
+    mv = comparison.score_movers
+    if mv.empty or "Symbol" not in mv.columns:
+        display(Markdown("_No score movers this window._"))
+    else:
+        mv_held = mv[mv["Symbol"].astype(str).isin(held)].copy()
+        if mv_held.empty:
+            display(Markdown("_No score movers among current holdings._"))
+        else:
+            display(Markdown("## Score moves in current holdings"))
+            for c in ("Value_Prior", "Value_Latest", "Delta", "Abs_Delta"):
+                if c in mv_held.columns:
+                    mv_held[c] = mv_held[c].round(2)
+            mv_held = mv_held.sort_values(
+                ["Abs_Delta", "Symbol"], ascending=[False, True], kind="stable"
+            ).head(25).reset_index(drop=True)
+            mv_held.index = mv_held.index + 1
+            mv_held.index.name = "Rank"
+            display(mv_held)
 ```
 
 ```{python}
-#| tags: [score-movers]
-if comparison is not None and not comparison.score_movers.empty:
-    display(Markdown("## Biggest score movers"))
-    mv = comparison.score_movers.copy()
-    sort_key = "Abs_Delta" if "Abs_Delta" in mv.columns else ("Delta" if "Delta" in mv.columns else None)
-    if sort_key == "Abs_Delta":
-        mv = mv.sort_values(sort_key, ascending=False)
-    elif sort_key == "Delta":
-        mv = mv.reindex(mv["Delta"].abs().sort_values(ascending=False).index)
-    mv = mv.head(25).reset_index(drop=True)
-    mv.index = mv.index + 1
-    mv.index.name = "Rank"
-    for c in ("Value_Latest", "Value_Prior", "Delta", "Abs_Delta"):
-        if c in mv.columns:
-            mv[c] = mv[c].round(2)
-    display(mv)
-elif comparison is not None:
-    display(Markdown("_No score movers in this window._"))
-```
-
-```{python}
-#| tags: [band-changes]
-if comparison is not None and not comparison.band_changes.empty:
-    display(Markdown("## Band changes"))
-    display(comparison.band_changes.head(50).reset_index(drop=True))
-elif comparison is not None:
-    display(Markdown("_No band changes in this window._"))
-```
-
-```{python}
-#| tags: [quadrant-changes]
-if comparison is not None and not comparison.quadrant_changes.empty:
-    display(Markdown("## Quadrant changes"))
-    display(comparison.quadrant_changes.head(50).reset_index(drop=True))
-elif comparison is not None:
-    display(Markdown("_No quadrant changes in this window._"))
-```
-
-```{python}
-#| tags: [new-removed]
-if comparison is not None:
-    cols_new = [c for c in ["Symbol", "Name", "Category", "Fund_Type"] if c in comparison.new_funds.columns]
-    cols_rm = [c for c in ["Symbol", "Name", "Category", "Fund_Type"] if c in comparison.removed_funds.columns]
-    blocks = []
-    if not comparison.new_funds.empty:
-        blocks.append("## New funds this cycle\n")
-        blocks.append(comparison.new_funds[cols_new].head(50).to_markdown(index=False))
-    if not comparison.removed_funds.empty:
-        blocks.append("## Removed funds this cycle\n")
-        blocks.append(comparison.removed_funds[cols_rm].head(50).to_markdown(index=False))
-    if blocks:
-        display(Markdown("\n\n".join(blocks)))
+#| tags: [holding-band-changes]
+if comparison is not None and overlay is not None and not overlay.scorecard.empty:
+    held = set(overlay.scorecard["Symbol"].dropna().astype(str))
+    held |= set(overlay.scorecard.get("Scoring_Symbol", pd.Series(dtype=str)).dropna().astype(str))
+    bc = comparison.band_changes
+    if not bc.empty and "Symbol" in bc.columns:
+        bc_held = bc[bc["Symbol"].astype(str).isin(held)].reset_index(drop=True)
+        if bc_held.empty:
+            display(Markdown("_No band changes among current holdings._"))
+        else:
+            display(Markdown("## Band changes in current holdings"))
+            display(bc_held)
 ```
 
 # Data Quality & Alias Reconciliation
@@ -863,11 +590,11 @@ else:
     applied_rows = int(meta.get("alias_applied_rows", 0))
     distinct = int(meta.get("distinct_aliases_used", 0))
     header = (
-        f"The overlay resolves share-class mismatches between the model "
-        f"library and the scored universe *before* joining — the "
-        f"committee-visible Symbol stays intact; only the join key is "
-        f"rewritten. This cycle applied **{applied_rows}** alias rewrites "
-        f"across **{distinct}** distinct mappings."
+        f"Share-class mismatches between the model library and the scored "
+        f"universe are reconciled before the join — the committee-visible "
+        f"Symbol stays intact; only the join key is rewritten. This cycle "
+        f"applied **{applied_rows}** alias rewrites across **{distinct}** "
+        f"distinct mappings."
     )
     notes = alias_notes(meta)
     if notes:
@@ -878,15 +605,7 @@ else:
         df = pd.DataFrame(rows)
     else:
         df = pd.DataFrame(columns=["Original", "Scoring", "Reason"])
-    # Always show the full baked-in list for committee reference so readers
-    # know which share-class consolidations exist regardless of this cycle's
-    # observed rewrites.
-    known_df = pd.DataFrame(
-        [{"Original": o, "Scoring": s, "Reason": r} for o, s, r in KNOWN_ALIASES],
-    )
     display(Markdown(header))
-    print("Applied this cycle:")
-    # Trigger printing the applied aliases table:
     display_applied = df if not df.empty else pd.DataFrame({"—": ["(none applied this cycle)"]})
     display(display_applied)
 ```
@@ -898,6 +617,113 @@ if overlay is not None:
     display(pd.DataFrame(
         [{"Original": o, "Scoring": s, "Reason": r} for o, s, r in KNOWN_ALIASES],
     ))
+```
+
+# Appendix
+
+The committee sections above are deliberately scoped to current model
+holdings. Replacement research and broader universe tops live here so the
+material is available for follow-up without crowding the governance
+narrative.
+
+## Appendix A — Replacement Candidates (research reference only)
+
+```{python}
+#| tags: [appendix-replacement]
+if overlay is None or overlay.replacement_candidates.empty:
+    display(Markdown(
+        "_No replacement candidates surfaced this cycle, or no overlay is "
+        "present._ These are **not** part of the committee decision; they "
+        "are retained for analyst follow-up."
+    ))
+else:
+    display(Markdown(
+        "Top same-category alternates for each holding flagged "
+        "`Replacement_Candidate`. Retained as a research reference only — "
+        "the monthly packet does not ask the committee to evaluate "
+        "replacements."
+    ))
+    display(replacement_candidates_for_committee(
+        overlay.replacement_candidates, top_per_holding=3,
+    ))
+```
+
+## Appendix B — Research Candidates (research reference only)
+
+```{python}
+#| tags: [appendix-research]
+if overlay is None or overlay.research_candidates.empty:
+    display(Markdown(
+        "_No research candidates present, or no overlay available._"
+    ))
+else:
+    display(Markdown(
+        "High-consensus funds in the broader universe that are not currently "
+        "held. For analyst follow-up between meetings — not committee action."
+    ))
+    display(research_candidates_for_committee(overlay.research_candidates, top_n=25))
+```
+
+## Appendix C — Top 50 Universe Consensus
+
+```{python}
+#| tags: [appendix-consensus]
+top = top_by_consensus(table, top_n=TOP_N)
+if top.empty:
+    display(Markdown("_Consensus view unavailable — need `Consensus_Rank` or both score columns._"))
+else:
+    cols = [c for c in [
+        "Symbol", "Name", "Category", "Fund_Type",
+        "Score_2023_Final", "Score_2025_Final", "Consensus_Rank",
+        "Score_Band_2023", "Score_Band_2025", "Action_Flag",
+    ] if c in top.columns]
+    view = top[cols].copy()
+    for c in ("Score_2023_Final", "Score_2025_Final"):
+        if c in view.columns:
+            view[c] = view[c].round(1)
+    display(view)
+```
+
+## Appendix D — Dual-Lens Universe Scatter
+
+```{python}
+#| tags: [appendix-scatter]
+if {"Score_2023_Final", "Score_2025_Final"}.issubset(table.columns):
+    plot_df = table.dropna(subset=["Score_2023_Final", "Score_2025_Final"])
+    fig, ax = plt.subplots(figsize=(8.2, 6.0))
+    ax.scatter(
+        plot_df["Score_2023_Final"], plot_df["Score_2025_Final"],
+        s=6, alpha=0.18, color=PACKET_PALETTE["primary"], rasterized=True,
+        label="Universe",
+    )
+    if overlay is not None and not overlay.scorecard.empty:
+        held_syms = set(overlay.scorecard["Scoring_Symbol"].dropna().astype(str))
+        if held_syms and "Symbol" in plot_df.columns:
+            held_plot = plot_df[plot_df["Symbol"].astype(str).isin(held_syms)]
+            if not held_plot.empty:
+                ax.scatter(
+                    held_plot["Score_2023_Final"], held_plot["Score_2025_Final"],
+                    s=24, color=PACKET_PALETTE["negative"],
+                    edgecolor="#ffffff", linewidths=0.5,
+                    label="Currently held", zorder=3,
+                )
+    for thr in (80,):
+        ax.axhline(thr, color=PACKET_PALETTE["muted"], lw=0.5, ls="--", alpha=0.7)
+        ax.axvline(thr, color=PACKET_PALETTE["muted"], lw=0.5, ls="--", alpha=0.7)
+    for thr in (60,):
+        ax.axhline(thr, color=PACKET_PALETTE["muted"], lw=0.4, ls=":", alpha=0.6)
+        ax.axvline(thr, color=PACKET_PALETTE["muted"], lw=0.4, ls=":", alpha=0.6)
+    ax.set_xlabel("2023 Performance score")
+    ax.set_ylabel("2025 Quality / Risk score")
+    ax.set_title("Dual-lens universe with current holdings overlay", loc="left")
+    ax.set_xlim(0, 105)
+    ax.set_ylim(0, 115)
+    ax.legend(loc="lower right")
+    plt.tight_layout()
+    display(fig)
+    plt.close(fig)
+else:
+    display(Markdown("_Dual-lens scatter unavailable — both score columns required._"))
 ```
 
 # Methodology Notes
@@ -920,10 +746,13 @@ if overlay is not None:
 ## Model holdings overlay
 
 The overlay joins the uploaded model library against the dual-score table
-and emits a scorecard (one row per holding), a per-model summary (target-
-weighted averages + band/quadrant shares), current-holdings review, and
-replacement + research candidate lists. The overlay is a *lens* on top of
-the scored universe — it does not alter any score.
+and emits a scorecard (one row per holding) plus review lists. The monthly
+committee packet uses the per-holding scorecard directly — **target-weighted
+model averages are intentionally not surfaced** in the committee narrative.
+Averaging two bands-on-three scores across a sleeve can mask the weak
+positions the committee needs to see explicitly; the governance question is
+whether individual holdings remain acceptable, not whether an aggregate
+score clears a threshold.
 
 **Action flags** (holding-level, distinct from the base `Action_Flag`):
 
@@ -933,6 +762,13 @@ the scored universe — it does not alter any score.
 - `Replacement_Candidate` — WEAK on at least one lens and failing on the
   other (or both WEAK).
 - `Review_Missing_Score` — holding is not in the scored universe.
+
+**Watch-list triggers.** A holding enters the Watch List when any of the
+following holds: weak on both lenses, score dropped ≥ 10 points versus the
+prior run, band crossed in the deteriorating direction, or the 2023 and
+2025 scores disagree by ≥ 15 points. These thresholds live in
+`packet_data.holdings_watch_list` and can be tuned without touching the
+overlay code.
 
 **Alias map.** Share-class mismatches (e.g. `PRBLX` vs `PRILX`) are
 reconciled before the join using `streamlit/config/symbol_aliases.csv` plus
@@ -958,8 +794,9 @@ The packet reads these artifacts from a single run directory:
 
 ## Known limitations
 
-1. **Consensus rank is unweighted.** A production weighting may favour the
-   forward-looking 2025 lens.
+1. **This packet is a governance artifact, not a research workbench.** It
+   answers whether current holdings are acceptable. It does not recommend
+   replacements; the appendix is retained for analyst reference only.
 2. **Replacement candidates are mechanical.** Same-category consensus-rank
    ordering; manager-level due diligence still belongs to the committee.
 3. **Intake preflight is optional.** If `intake_report.json` is absent the

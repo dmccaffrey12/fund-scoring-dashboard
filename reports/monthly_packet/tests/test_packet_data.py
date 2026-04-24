@@ -42,6 +42,8 @@ from packet_data import (  # noqa: E402
     model_stackup,
     action_flag_weight_matrix,
     weak_holdings,
+    current_holdings_scorecard,
+    holdings_watch_list,
     replacement_candidates_for_committee,
     research_candidates_for_committee,
     alias_notes,
@@ -506,12 +508,106 @@ def test_overlay_derived_views():
     assert "Parnassus" in notes[0]["reason"]
 
 
+def test_current_holdings_scorecard_with_prior_deltas():
+    """Scorecard view should surface prior scores + deltas when given a prior scorecard."""
+    _, scorecard, _, _, _, _ = _make_overlay_fixtures()
+    prior = scorecard.copy()
+    # Simulate a prior month where one holding scored 10 points higher and
+    # one was missing entirely from the prior overlay.
+    prior.loc[prior["Symbol"] == "AAA", "Score_2023_Final"] = 95.0
+    prior.loc[prior["Symbol"] == "AAA", "Score_2025_Final"] = 95.0
+    prior = prior[prior["Symbol"] != "BBB"]
+
+    board = current_holdings_scorecard(scorecard, prior)
+    assert not board.empty
+    assert {"Model_Name", "Holding", "Category_Sleeve", "Overlay_Action"} <= set(board.columns)
+    # Current AAA 90.0, prior 95.0, delta = -5.0.
+    aaa = board[board["Holding"] == "AAA"].iloc[0]
+    assert aaa["Delta_2023"] == -5.0
+    assert aaa["Score_2023_Prior"] == 95.0
+    # BBB had no prior — delta should be NaN.
+    bbb = board[board["Holding"] == "BBB"].iloc[0]
+    assert pd.isna(bbb["Delta_2023"])
+
+    # Alias-applied rows should render "ORIG → SCORING".
+    prblx_row = board[board["Holding"].str.startswith("PRBLX")]
+    assert not prblx_row.empty
+    assert "PRILX" in prblx_row.iloc[0]["Holding"]
+
+
+def test_current_holdings_scorecard_without_prior():
+    _, scorecard, _, _, _, _ = _make_overlay_fixtures()
+    board = current_holdings_scorecard(scorecard, prior_scorecard=None)
+    assert not board.empty
+    # Deltas should be all NaN when there is no prior scorecard.
+    assert board["Delta_2023"].isna().all()
+    assert board["Delta_2025"].isna().all()
+
+
+def test_holdings_watch_list_triggers():
+    _, scorecard, _, _, _, _ = _make_overlay_fixtures()
+    # Seed a prior scorecard that drives deterioration and a band crossing.
+    prior = scorecard.copy()
+    prior.loc[prior["Symbol"] == "BBB", "Score_2025_Final"] = 85.0  # dropped to 55 → -30 move
+    prior.loc[prior["Symbol"] == "BBB", "Score_Band_2025"] = "STRONG"
+
+    watch = holdings_watch_list(scorecard, prior)
+    assert not watch.empty
+    holdings = set(watch["Holding"])
+    # PRBLX→PRILX is a Replacement_Candidate (weak/weak).
+    assert any("PRBLX" in h for h in holdings)
+    # BBB should trigger deterioration + band-crossing + disagreement.
+    bbb = watch[watch["Holding"] == "BBB"]
+    assert not bbb.empty
+    reason = bbb.iloc[0]["Review_Reason"]
+    assert "2025 score dropped" in reason
+    assert "2025 band STRONG→WEAK" in reason
+    assert "disagreement" in reason.lower()
+
+
+def test_holdings_watch_list_empty_when_clean():
+    """A clean portfolio (no triggers) should yield an empty watch list."""
+    clean = pd.DataFrame([
+        {
+            "Model_Name": "Clean", "Symbol": "AAA", "Scoring_Symbol": "AAA",
+            "Alias_Applied": False, "Target_Weight_Pct": 100.0,
+            "Category": "Large Growth",
+            "Score_2023_Final": 90.0, "Score_2025_Final": 92.0,
+            "Score_Band_2023": "STRONG", "Score_Band_2025": "STRONG",
+            "Overlay_Action": "High_Conviction_Hold",
+        }
+    ])
+    watch = holdings_watch_list(clean, prior_scorecard=None)
+    assert watch.empty
+
+
+def test_load_packet_inputs_loads_prior_overlay():
+    """When a comparison bundle exists and the prior run has an overlay, load it."""
+    with tempfile.TemporaryDirectory() as td:
+        runs_dir = os.path.join(td, "runs")
+        os.makedirs(runs_dir)
+        _write_run(runs_dir, "2026-03-22", _make_dual_score_table(), with_overlay=True)
+        _write_run(
+            runs_dir,
+            "2026-04-22",
+            _make_dual_score_table(),
+            with_overlay=True,
+            comparison={"prior_date": "2026-03-22"},
+        )
+        inp = load_packet_inputs(runs_dir=runs_dir)
+        assert inp.has_prior_model_overlay
+        assert inp.prior_model_overlay is not None
+        assert not inp.prior_model_overlay.scorecard.empty
+
+
 def test_overlay_derived_views_empty_safe():
     """Derived view helpers should return empty frames when inputs are empty."""
     empty = pd.DataFrame()
     assert model_stackup(empty).empty
     assert action_flag_weight_matrix(empty).empty
     assert weak_holdings(empty).empty
+    assert current_holdings_scorecard(empty).empty
+    assert holdings_watch_list(empty).empty
     assert replacement_candidates_for_committee(empty).empty
     assert research_candidates_for_committee(empty).empty
     assert alias_notes(None) == []
@@ -584,6 +680,64 @@ def test_theme_assets_present_and_wired_in():
     assert "@media print" in scss, "print/PDF media block missing from theme"
 
 
+def test_qmd_is_holdings_focused_committee_memo():
+    """Structural contract for the committee-facing monthly packet.
+
+    The packet should lead with current model holdings and keep replacement /
+    research depth in an appendix — the committee signed off on a concise
+    governance artifact, not a research workbench. This test fails loudly if
+    a future revision re-promotes universe-wide research sections.
+    """
+    qmd_path = os.path.abspath(os.path.join(_PKT_DIR, "monthly_packet.qmd"))
+    with open(qmd_path) as f:
+        qmd = f.read()
+
+    # Required committee sections.
+    required_sections = [
+        "# Executive Summary",
+        "# Current Model Holdings Scorecard",
+        "# Holdings Requiring Review",
+        "# Dual-Lens Context",
+        "# What Changed — Holdings Impact",
+        "# Data Quality & Alias Reconciliation",
+        "# Appendix",
+    ]
+    for section in required_sections:
+        assert section in qmd, f"missing required committee section: {section}"
+
+    # These helpers drive the new structure — ensure they're wired in.
+    assert "current_holdings_scorecard(" in qmd
+    assert "holdings_watch_list(" in qmd
+
+    # Sections we intentionally removed from the main committee narrative.
+    # They may reappear as appendix subsections but must not be top-level.
+    removed_top_level = [
+        "\n# Model Stack-Up",
+        "\n# Action Flag Breakdown",
+        "\n# Model-by-Model Review",
+        "\n# Replacement Candidates\n",  # exact top-level header
+        "\n# Research Candidates\n",
+    ]
+    for marker in removed_top_level:
+        assert marker not in qmd, (
+            f"top-level section {marker!r} is back in the committee packet — "
+            "keep this material in the appendix only"
+        )
+
+    # Replacement / research may only appear as appendix subsections.
+    assert "## Appendix A — Replacement Candidates" in qmd
+    assert "## Appendix B — Research Candidates" in qmd
+
+    # Weighted-score averages were explicitly removed from the committee
+    # narrative. Catch the obvious ways they could sneak back in.
+    assert "Weighted_Score_2023" not in qmd, (
+        "Weighted_Score_2023 surfaced in the committee packet — the committee "
+        "asked that weighted model averages not be emphasised"
+    )
+    assert "Target-weighted average scores" not in qmd
+    assert "Target-weighted model scores" not in qmd
+
+
 def test_qmd_uses_packet_palette_for_charts():
     """Charts in the packet should pull from the shared PACKET_PALETTE so the
     committee sees consistent colours across figures. Catch future drift by
@@ -621,11 +775,17 @@ def _run_all():
         test_derived_views,
         test_load_packet_inputs_with_model_overlay,
         test_load_packet_inputs_without_model_overlay,
+        test_load_packet_inputs_loads_prior_overlay,
         test_overlay_partial_artifacts_are_tolerated,
         test_overlay_derived_views,
+        test_current_holdings_scorecard_with_prior_deltas,
+        test_current_holdings_scorecard_without_prior,
+        test_holdings_watch_list_triggers,
+        test_holdings_watch_list_empty_when_clean,
         test_overlay_derived_views_empty_safe,
         test_qmd_code_blocks_importable,
         test_theme_assets_present_and_wired_in,
+        test_qmd_is_holdings_focused_committee_memo,
         test_qmd_uses_packet_palette_for_charts,
         test_errors_when_no_run_found,
     ]
