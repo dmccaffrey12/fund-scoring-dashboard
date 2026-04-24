@@ -39,6 +39,14 @@ from model_holdings_overlay import (
     load_overlay,
     write_overlay,
 )
+from replacement_workbench import (
+    DEFAULT_TOP_N as REPLACEMENT_DEFAULT_TOP_N,
+    ReplacementResult,
+    build_replacement_workbench,
+    load_replacement,
+    workbench_dir,
+    write_replacement,
+)
 from symbol_aliases import load_default_aliases
 from run_archive import (
     DEFAULT_RUNS_DIR,
@@ -365,6 +373,95 @@ def load_model_overlay_for_run(
     """Return persisted overlay artifacts for the run, or None if absent."""
     out_dir = run_overlay_dir(runs_dir, run_date)
     return load_overlay(out_dir)
+
+
+# ---------------------------------------------------------------------------
+# Replacement Workbench (optional, per-ticker replacement research)
+# ---------------------------------------------------------------------------
+
+def model_holding_symbols_for_run(
+    run_date: str,
+    runs_dir: str = DEFAULT_RUNS_DIR,
+) -> pd.DataFrame:
+    """Return a small {Symbol, Scoring_Symbol, Model_Name, Target_Weight_Pct}
+    frame pulled from the overlay scorecard for ``run_date`` — used by the
+    replacement workbench UI to populate its 'current holding' picker.
+
+    Returns an empty DataFrame when no overlay has been generated yet.
+    """
+    cols = ["Symbol", "Scoring_Symbol", "Model_Name", "Target_Weight_Pct",
+            "Name", "Category", "Overlay_Action"]
+    overlay = load_overlay(run_overlay_dir(runs_dir, run_date))
+    if overlay is None:
+        return pd.DataFrame(columns=cols)
+    sc = overlay.get("scorecard")
+    if sc is None or sc.empty:
+        return pd.DataFrame(columns=cols)
+    present = [c for c in cols if c in sc.columns]
+    return sc[present].copy()
+
+
+def generate_replacement_workbench_for_run(
+    run_date: str,
+    ticker: str,
+    runs_dir: str = DEFAULT_RUNS_DIR,
+    model_name: Optional[str] = None,
+    category_override: Optional[str] = None,
+    top_n: int = REPLACEMENT_DEFAULT_TOP_N,
+    exclude_held: bool = False,
+    persist: bool = True,
+    alias_csv_path: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Build + (optionally) persist a replacement short list for one ticker.
+
+    When an overlay has already been generated for the run the scorecard is
+    loaded automatically so candidates can flag ``Already_Held`` and the
+    current-holding profile can surface the Model_Name / Target_Weight_Pct.
+    """
+    run = load_run(run_date, runs_dir=runs_dir)
+    scorecard: Optional[pd.DataFrame] = None
+    overlay = load_overlay(run_overlay_dir(runs_dir, run_date))
+    if overlay is not None:
+        scorecard = overlay.get("scorecard")
+
+    alias_map = load_default_aliases(extra_path=alias_csv_path)
+    result = build_replacement_workbench(
+        dual_table=run["table"],
+        ticker=ticker,
+        scorecard=scorecard,
+        model_name=model_name,
+        category_override=category_override,
+        top_n=top_n,
+        exclude_held=exclude_held,
+        alias_map=alias_map,
+        run_date=run_date,
+    )
+
+    out_dir = workbench_dir(runs_dir, run_date, ticker)
+    paths: Dict[str, str] = {}
+    if persist:
+        paths = write_replacement(result, out_dir)
+
+    return {
+        "run_date": run_date,
+        "path": out_dir,
+        "paths": paths,
+        "result": result,
+        "candidates": result.candidates,
+        "current_profile": result.current_profile,
+        "summary": result.summary,
+        "brief_markdown": result.brief_markdown,
+    }
+
+
+def load_replacement_for_run(
+    run_date: str,
+    ticker: str,
+    runs_dir: str = DEFAULT_RUNS_DIR,
+) -> Optional[Dict[str, Any]]:
+    """Return persisted workbench artifacts for the run/ticker, or None."""
+    out_dir = workbench_dir(runs_dir, run_date, ticker)
+    return load_replacement(out_dir)
 
 
 # ---------------------------------------------------------------------------

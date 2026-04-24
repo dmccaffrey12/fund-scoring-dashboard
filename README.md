@@ -378,6 +378,108 @@ Used** tabs. The subsequent Excel audit workbook automatically picks up
 the overlay artifacts and adds the five `Model_*` / `Research_*` /
 `Replacement_*` sheets.
 
+## Replacement Workbench (per-ticker research)
+
+`streamlit/replacement_workbench.py` is the one-off research companion to
+the overlay: the overlay scans every holding in every model and emits a
+packet-wide short list; the workbench answers **"if this single holding
+isn't acceptable, what should replace it?"** for one ticker at a time.
+
+The two are deliberately separate — the monthly Quarto packet and Excel
+audit workbook still run off the overlay. The workbench is a focused
+committee-prep tool for when a portfolio manager already knows which
+holding they want to reconsider and needs a short, ranked same-category
+candidate list with both the 2023 and 2025 systems visible side-by-side.
+
+### What it does
+
+Given a run archive and a current-holding ticker, it:
+
+1. Resolves share-class aliases (e.g. `PRBLX` → `PRILX`) so the
+   committee-facing ticker stays intact while the join lands on the scored
+   representative.
+2. Pulls the current holding's profile from the dual-score table (plus
+   `Model_Name` / `Target_Weight_Pct` / `Overlay_Action` from the overlay
+   scorecard if one has been generated).
+3. Detects category from the scored universe, with an explicit
+   `--category` override for tickers that aren't scored.
+4. Filters the universe to **same-category candidates**, drops the
+   current holding, and annotates (or optionally excludes) funds already
+   held by any model.
+5. Ranks candidates by `Consensus_Rank` (ascending, best first) with
+   stable tie-breakers on 2025 score / 2023 score / Symbol. The 2023 and
+   2025 scores, ranks, and bands are preserved on every row — the
+   workbench never blends disagreement into one number. A plain-English
+   `Reason_Label` summarises the fit (Consensus / Performance-led /
+   Quality-led / Mixed / Weak).
+
+### CLI
+
+```bash
+cd streamlit
+
+# Latest run, default top-10, default alias map (PRBLX -> PRILX).
+python replacement_workbench.py build --ticker PRBLX
+
+# Specific run + larger short list, exclude candidates already held.
+python replacement_workbench.py build \
+    --run-date 2026-04-30 \
+    --ticker PRBLX \
+    --top-n 15 \
+    --exclude-held
+
+# Force a category override (useful when the ticker isn't in the universe).
+python replacement_workbench.py build \
+    --ticker SOMEFUND \
+    --category "Large Blend"
+```
+
+### Artifact layout
+
+Each run gets a per-ticker subfolder under its archive:
+
+```
+streamlit/runs/<run-date>/replacement_workbench/<TICKER>/
+    replacement_candidates.csv     # ranked short list, dual-lens columns
+    current_holding_profile.csv    # one row describing the current holding
+    replacement_summary.json       # provenance (category source, counts, etc.)
+    replacement_brief.md           # human-readable Markdown brief
+```
+
+### Library
+
+```python
+from replacement_workbench import run_replacement_for_run
+
+bundle = run_replacement_for_run(
+    run_date="2026-04-30",
+    ticker="PRBLX",
+    top_n=10,
+)
+bundle["candidates"]          # ranked same-category short list
+bundle["current_profile"]     # single-row DataFrame
+bundle["brief_markdown"]      # Markdown string
+bundle["paths"]               # dict of persisted artifact paths
+```
+
+### Streamlit UI
+
+On the **Monthly Workflow** page the workbench is **step 4c**, directly
+below the overlay. It picks up the run that the overlay was generated
+against (or the latest run), pre-selects any model holding as the
+"current holding" (with `PRBLX` preselected when present), lets you
+override the category or the top-N, toggle exclude-held, and renders
+three tabs: **Current Holding Profile**, **Top Candidates**, and the
+**Brief**. Share-class aliases are surfaced in a banner when they fire.
+
+### How it differs from the overlay and the Quarto packet
+
+| Tool | Scope | When to use |
+|------|-------|-------------|
+| Overlay (`model_holdings_overlay`) | Every holding in every model | Monthly committee prep — flags weak links packet-wide |
+| Quarto / Excel packet | Dual-score table + overlay artifacts | Durable monthly record |
+| **Replacement Workbench** | **One ticker at a time** | **"I need to replace PRBLX — give me a short list"** |
+
 ## Validation Targets
 - SCHD (Passive): ~69.6
 - OMCIX (Active): ~68.7
