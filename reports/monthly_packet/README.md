@@ -8,6 +8,27 @@ This is the consumer side of the run-archive / dual-score-table / run-comparison
 pipeline. Nothing is computed from ad-hoc sample data — the packet always
 reflects a specific dated run directory.
 
+## Render engine & theme
+
+The packet is rendered by **Quarto** with a custom theme (`fundscore.scss`
++ `fundscore.css`) that replaces Quarto's default Bootstrap look with a
+committee-memo aesthetic: calm ivory background, serif body type, restrained
+numbered sections, numeric-aligned committee tables, muted chart palette, and
+a print/PDF media block.
+
+- `fundscore.scss` — SCSS variables + rules layered on top of the `cosmo`
+  base. Owns typography, spacing, section dividers, dataframe/table styling,
+  TOC look, blockquote/placeholder treatment, and print overrides.
+- `fundscore.css` — companion rules that don't compose cleanly in SCSS
+  (numeric-column alignment, colophon banner styling, scroll containers).
+- `monthly_packet.qmd` — sets `theme: [cosmo, fundscore.scss]`, registers a
+  shared `PACKET_PALETTE` for matplotlib charts, and narrows the page to
+  `body-width: 860px` for memo-like line length.
+
+To change the committee-packet aesthetic (fonts, section colour, table
+density, chart palette) edit those three files — no downstream tooling
+needs to change.
+
 ## What's in the packet
 
 1. **Executive Summary** — universe size, band mix, consensus leaders, MoM headline.
@@ -143,6 +164,20 @@ bash reports/monthly_packet/render.sh --run-date 2026-04-30 --out /tmp/april_pac
 
 The default output HTML lands next to the `.qmd` file
 (`reports/monthly_packet/monthly_packet.html`), gitignored and self-contained.
+
+### Print / PDF
+
+The theme ships print-friendly CSS: sections force page breaks at H1, the
+TOC + code-fold chrome drop out, and tables avoid mid-row breaks where the
+browser's paginator allows. To produce a PDF from the rendered HTML, open
+the file in Chrome / Edge and print with "Background graphics" **on** so
+the memo treatment of the executive-summary callout and banner reaches the
+PDF. That keeps the rendered HTML self-contained (no PDF toolchain
+dependency); the Quarto render already emits `embed-resources: true`.
+
+If a Chromium-headless workflow is added in the future, a native PDF target
+can be wired up via `quarto render --to pdf` with a LaTeX engine; this
+repo deliberately keeps PDF out of the critical path.
 
 ## Refreshing for the next cycle
 

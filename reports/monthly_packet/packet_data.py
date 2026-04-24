@@ -52,6 +52,14 @@ VALIDATION_FILE = os.path.join("validation", "validation_report.json")
 INTAKE_FILE = os.path.join("validation", "intake_report.json")
 COMPARISON_DIR = "comparison"
 
+MODEL_OVERLAY_DIR = "model_holdings"
+OVERLAY_SUMMARY_FILE = "model_summary.csv"
+OVERLAY_SCORECARD_FILE = "model_holdings_scorecard.csv"
+OVERLAY_CURRENT_REVIEW_FILE = "current_holdings_review.csv"
+OVERLAY_REPLACEMENT_FILE = "replacement_candidates.csv"
+OVERLAY_RESEARCH_FILE = "research_candidates.csv"
+OVERLAY_METADATA_FILE = "overlay_metadata.json"
+
 _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 
@@ -69,11 +77,33 @@ class PacketInputs:
     validation: Optional[Dict[str, Any]] = None
     intake: Optional[Dict[str, Any]] = None
     comparison: Optional["ComparisonBundle"] = None
+    model_overlay: Optional["ModelOverlayBundle"] = None
+    prior_model_overlay: Optional["ModelOverlayBundle"] = None
     warnings: List[str] = field(default_factory=list)
 
     @property
     def has_comparison(self) -> bool:
         return self.comparison is not None
+
+    @property
+    def has_model_overlay(self) -> bool:
+        return self.model_overlay is not None
+
+    @property
+    def has_prior_model_overlay(self) -> bool:
+        return self.prior_model_overlay is not None
+
+
+@dataclass
+class ModelOverlayBundle:
+    """Loaded model-holdings overlay artifacts for a run."""
+    path: str
+    summary: pd.DataFrame
+    scorecard: pd.DataFrame
+    current_review: pd.DataFrame
+    replacement_candidates: pd.DataFrame
+    research_candidates: pd.DataFrame
+    metadata: Dict[str, Any]
 
 
 @dataclass
@@ -218,6 +248,38 @@ def _load_comparison(run_path: str) -> Optional[ComparisonBundle]:
     )
 
 
+def _load_model_overlay(run_path: str) -> Optional[ModelOverlayBundle]:
+    """Load persisted model-holdings overlay artifacts for a run.
+
+    Returns None when the overlay subdirectory is missing or does not contain
+    a scorecard file (the canonical required artifact). All other files are
+    optional — an absent file becomes an empty DataFrame so the packet can
+    render the sections with clear placeholders.
+    """
+    out_dir = os.path.join(run_path, MODEL_OVERLAY_DIR)
+    if not os.path.isdir(out_dir):
+        return None
+    scorecard_path = os.path.join(out_dir, OVERLAY_SCORECARD_FILE)
+    if not os.path.isfile(scorecard_path):
+        return None
+
+    def _csv(name: str) -> pd.DataFrame:
+        df = _read_csv_if_present(os.path.join(out_dir, name))
+        return df if df is not None else pd.DataFrame()
+
+    metadata = _read_json_if_present(os.path.join(out_dir, OVERLAY_METADATA_FILE)) or {}
+
+    return ModelOverlayBundle(
+        path=out_dir,
+        summary=_csv(OVERLAY_SUMMARY_FILE),
+        scorecard=_csv(OVERLAY_SCORECARD_FILE),
+        current_review=_csv(OVERLAY_CURRENT_REVIEW_FILE),
+        replacement_candidates=_csv(OVERLAY_REPLACEMENT_FILE),
+        research_candidates=_csv(OVERLAY_RESEARCH_FILE),
+        metadata=metadata,
+    )
+
+
 def load_packet_inputs(
     run_path: Optional[str] = None,
     run_date: Optional[str] = None,
@@ -247,12 +309,23 @@ def load_packet_inputs(
     validation = _read_json_if_present(os.path.join(resolved, VALIDATION_FILE))
     intake = _read_json_if_present(os.path.join(resolved, INTAKE_FILE))
     comparison = _load_comparison(resolved)
+    model_overlay = _load_model_overlay(resolved)
+
+    prior_model_overlay: Optional[ModelOverlayBundle] = None
+    if comparison is not None and comparison.prior_date:
+        prior_run_dir = os.path.join(os.path.dirname(resolved), comparison.prior_date)
+        if _is_run_dir(prior_run_dir):
+            prior_model_overlay = _load_model_overlay(prior_run_dir)
 
     warnings: List[str] = []
     if validation is None:
         warnings.append("validation_report.json not found")
     if comparison is None:
         warnings.append("no comparison bundle found")
+    if model_overlay is None:
+        warnings.append("no model holdings overlay found")
+    if prior_model_overlay is None and comparison is not None:
+        warnings.append("no prior-run model holdings overlay found")
 
     run_date_str = str(metadata.get("run_date") or os.path.basename(resolved))
 
@@ -264,6 +337,8 @@ def load_packet_inputs(
         validation=validation,
         intake=intake,
         comparison=comparison,
+        model_overlay=model_overlay,
+        prior_model_overlay=prior_model_overlay,
         warnings=warnings,
     )
 
@@ -393,6 +468,446 @@ def quadrant_counts(table: pd.DataFrame) -> pd.Series:
 # Convenience metadata helpers
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Model-overlay derived views
+# ---------------------------------------------------------------------------
+
+# Overlay action-flag weight columns produced by streamlit/model_holdings_overlay.py.
+# Ordered from best-to-worst so committee stacks read naturally top-to-bottom.
+OVERLAY_WEIGHT_COLUMNS = [
+    ("Weight_Pct_HighConviction", "High Conviction Hold"),
+    ("Weight_Pct_PerfLed", "Performance-Led / Review Quality"),
+    ("Weight_Pct_QualityLed", "Quality-Led / Review Patience"),
+    ("Weight_Pct_Replacement", "Replacement Candidate"),
+    ("Weight_Pct_Unscored", "Unscored / Coverage Gap"),
+]
+
+# Known share-class reconciliations the overlay applies silently before the
+# join. Surfacing these in the packet makes alias behavior visible to the
+# committee without them having to open the config file.
+KNOWN_ALIASES = [
+    ("PRBLX", "PRILX", "Parnassus Core Equity — kept institutional share class"),
+    ("GSTKX", "GSIKX", "GS Small Cap Growth Insights — kept institutional share class"),
+    ("PONPX", "PIMIX", "PIMCO Income — kept institutional share class"),
+    ("FECMX", "FEMKX", "Fidelity Emerging Markets — kept oldest share class"),
+]
+
+
+def model_stackup(summary: pd.DataFrame) -> pd.DataFrame:
+    """Compact committee-facing view of the per-model summary table.
+
+    Returns an empty DataFrame if ``summary`` is empty. Columns not present in
+    the summary are silently omitted so this is tolerant of older runs that
+    may be missing individual weight columns.
+    """
+    if summary is None or summary.empty:
+        return pd.DataFrame()
+    wanted = [
+        "Model_Name",
+        "Holding_Count",
+        "Scored_Holding_Count",
+        "Scored_Weight_Pct",
+        "Weighted_Score_2023",
+        "Weighted_Score_2025",
+        "Weight_Pct_Q1_Both_Strong",
+        "Weight_Pct_Q4_Both_Weak",
+        "Weight_Pct_HighConviction",
+        "Weight_Pct_Replacement",
+        "Weight_Pct_Unscored",
+    ]
+    cols = [c for c in wanted if c in summary.columns]
+    view = summary[cols].copy()
+    # Round numeric columns for display; keep ints intact.
+    for c in view.columns:
+        if view[c].dtype.kind in "fc":
+            view[c] = view[c].round(1)
+    return view.reset_index(drop=True)
+
+
+def action_flag_weight_matrix(summary: pd.DataFrame) -> pd.DataFrame:
+    """Model-by-action-flag matrix of weight share (%) suitable for a stacked bar.
+
+    Rows = Model_Name, columns = action-flag labels, values = weight %.
+    """
+    if summary is None or summary.empty or "Model_Name" not in summary.columns:
+        return pd.DataFrame()
+    present_cols = [(c, label) for c, label in OVERLAY_WEIGHT_COLUMNS if c in summary.columns]
+    if not present_cols:
+        return pd.DataFrame()
+    out = pd.DataFrame({"Model_Name": summary["Model_Name"]})
+    for col, label in present_cols:
+        out[label] = summary[col].astype(float).round(1)
+    return out.set_index("Model_Name")
+
+
+def weak_holdings(current_review: pd.DataFrame, top_n: int = 30) -> pd.DataFrame:
+    """Holdings flagged for replacement or coverage review, trimmed for committee.
+
+    Filters to the rows most likely to drive discussion (Replacement_Candidate
+    first, then Review_Missing_Score), and limits to ``top_n`` rows.
+    """
+    if current_review is None or current_review.empty:
+        return pd.DataFrame()
+    df = current_review.copy()
+    wanted = [
+        "Model_Name", "Symbol", "Scoring_Symbol", "Name", "Category",
+        "Target_Weight_Pct",
+        "Score_2023_Final", "Score_2025_Final",
+        "Score_Band_2023", "Score_Band_2025",
+        "Overlay_Action", "Primary_Driver",
+    ]
+    cols = [c for c in wanted if c in df.columns]
+    view = df[cols].copy()
+    for c in ("Score_2023_Final", "Score_2025_Final", "Target_Weight_Pct"):
+        if c in view.columns:
+            view[c] = view[c].round(1)
+    return view.head(top_n).reset_index(drop=True)
+
+
+def replacement_candidates_for_committee(
+    replacements: pd.DataFrame,
+    top_per_holding: int = 3,
+) -> pd.DataFrame:
+    """Trim the raw replacement_candidates table for packet display."""
+    if replacements is None or replacements.empty:
+        return pd.DataFrame()
+    df = replacements.copy()
+    if "Candidate_Rank" in df.columns:
+        df = df[df["Candidate_Rank"] <= top_per_holding]
+    wanted = [
+        "Model_Name", "Current_Symbol", "Current_Name", "Current_Category",
+        "Current_Score_2023_Final", "Current_Score_2025_Final",
+        "Candidate_Rank", "Candidate_Symbol", "Candidate_Name",
+        "Candidate_Fund_Type",
+        "Candidate_Score_2023_Final", "Candidate_Score_2025_Final",
+        "Candidate_Score_Band_2023", "Candidate_Score_Band_2025",
+    ]
+    cols = [c for c in wanted if c in df.columns]
+    view = df[cols].copy()
+    for c in (
+        "Current_Score_2023_Final", "Current_Score_2025_Final",
+        "Candidate_Score_2023_Final", "Candidate_Score_2025_Final",
+    ):
+        if c in view.columns:
+            view[c] = view[c].round(1)
+    return view.reset_index(drop=True)
+
+
+def research_candidates_for_committee(
+    research: pd.DataFrame,
+    top_n: int = 25,
+) -> pd.DataFrame:
+    """Trim the research candidates table for packet display."""
+    if research is None or research.empty:
+        return pd.DataFrame()
+    wanted = [
+        "Symbol", "Name", "Category", "Fund_Type",
+        "Score_2023_Final", "Score_2025_Final",
+        "Rank_2023", "Rank_2025", "Consensus_Rank",
+        "Score_Band_2023", "Score_Band_2025", "Quadrant",
+        "Primary_Driver",
+    ]
+    cols = [c for c in wanted if c in research.columns]
+    view = research[cols].head(top_n).copy()
+    for c in ("Score_2023_Final", "Score_2025_Final"):
+        if c in view.columns:
+            view[c] = view[c].round(1)
+    return view.reset_index(drop=True)
+
+
+def _prior_scores_by_symbol(prior_scorecard: Optional[pd.DataFrame]) -> Dict[str, Dict[str, Any]]:
+    """Index prior-run scorecard rows by (Model_Name, Symbol) for delta lookup.
+
+    Returns an empty dict if the prior scorecard is missing/empty or lacks the
+    join keys. Keys are tuples rendered as ``"<model>||<symbol>"`` strings so
+    downstream code can look up without constructing tuples.
+    """
+    if prior_scorecard is None or prior_scorecard.empty:
+        return {}
+    need = {"Model_Name", "Symbol"}
+    if not need.issubset(prior_scorecard.columns):
+        return {}
+    out: Dict[str, Dict[str, Any]] = {}
+    for _, row in prior_scorecard.iterrows():
+        key = f"{row.get('Model_Name')}||{row.get('Symbol')}"
+        out[key] = {
+            "Score_2023_Final": row.get("Score_2023_Final"),
+            "Score_2025_Final": row.get("Score_2025_Final"),
+            "Score_Band_2023": row.get("Score_Band_2023"),
+            "Score_Band_2025": row.get("Score_Band_2025"),
+            "Overlay_Action": row.get("Overlay_Action"),
+        }
+    return out
+
+
+def current_holdings_scorecard(
+    scorecard: pd.DataFrame,
+    prior_scorecard: Optional[pd.DataFrame] = None,
+) -> pd.DataFrame:
+    """Compact committee-facing view of current model holdings.
+
+    One row per current holding. Includes original symbol, the scoring symbol
+    it was aliased to (when applicable), category/sleeve, current 2023 and
+    2025 scores, bands, prior-month scores + deltas when a prior overlay
+    exists, and the overlay action flag. The goal is to answer:
+    *"are our current model holdings still acceptable?"* at a glance.
+    """
+    if scorecard is None or scorecard.empty:
+        return pd.DataFrame()
+
+    df = scorecard.copy()
+    prior_idx = _prior_scores_by_symbol(prior_scorecard)
+
+    # Alias display column — show `ORIG→SCORING` only when an alias was applied
+    # so the unchanged case stays visually quiet.
+    if {"Symbol", "Scoring_Symbol"}.issubset(df.columns):
+        alias_disp = []
+        for _, r in df.iterrows():
+            orig = str(r.get("Symbol") or "")
+            score = str(r.get("Scoring_Symbol") or "")
+            if r.get("Alias_Applied") and orig and score and orig != score:
+                alias_disp.append(f"{orig} → {score}")
+            else:
+                alias_disp.append(orig)
+        df["Holding"] = alias_disp
+    else:
+        df["Holding"] = df.get("Symbol", "")
+
+    # Category/Sleeve — prefer the overlay's Sleeve when present, otherwise
+    # fall back to the dual-score table's Category.
+    sleeve = df.get("Sleeve")
+    category = df.get("Category")
+    if sleeve is not None and category is not None:
+        df["Category_Sleeve"] = sleeve.fillna("").astype(str).where(
+            sleeve.notna() & (sleeve.astype(str) != ""), category
+        )
+    elif sleeve is not None:
+        df["Category_Sleeve"] = sleeve
+    elif category is not None:
+        df["Category_Sleeve"] = category
+    else:
+        df["Category_Sleeve"] = ""
+
+    # Prior-month scores + deltas
+    prior_2023: List[Optional[float]] = []
+    prior_2025: List[Optional[float]] = []
+    delta_2023: List[Optional[float]] = []
+    delta_2025: List[Optional[float]] = []
+    for _, r in df.iterrows():
+        key = f"{r.get('Model_Name')}||{r.get('Symbol')}"
+        p = prior_idx.get(key, {})
+        p23 = p.get("Score_2023_Final")
+        p25 = p.get("Score_2025_Final")
+        prior_2023.append(p23 if pd.notna(p23) else None)
+        prior_2025.append(p25 if pd.notna(p25) else None)
+        c23 = r.get("Score_2023_Final")
+        c25 = r.get("Score_2025_Final")
+        delta_2023.append(
+            float(c23) - float(p23) if (pd.notna(c23) and pd.notna(p23)) else None
+        )
+        delta_2025.append(
+            float(c25) - float(p25) if (pd.notna(c25) and pd.notna(p25)) else None
+        )
+    df["Score_2023_Prior"] = prior_2023
+    df["Score_2025_Prior"] = prior_2025
+    df["Delta_2023"] = delta_2023
+    df["Delta_2025"] = delta_2025
+
+    cols = [
+        "Model_Name", "Holding", "Category_Sleeve", "Target_Weight_Pct",
+        "Score_2023_Final", "Score_2023_Prior", "Delta_2023", "Score_Band_2023",
+        "Score_2025_Final", "Score_2025_Prior", "Delta_2025", "Score_Band_2025",
+        "Overlay_Action",
+    ]
+    present = [c for c in cols if c in df.columns]
+    view = df[present].copy()
+    for c in (
+        "Target_Weight_Pct",
+        "Score_2023_Final", "Score_2023_Prior", "Delta_2023",
+        "Score_2025_Final", "Score_2025_Prior", "Delta_2025",
+    ):
+        if c in view.columns:
+            view[c] = pd.to_numeric(view[c], errors="coerce").round(1)
+    # Stable sort: model first, then by weight (descending) so high-weight
+    # holdings surface at the top of each model block.
+    sort_cols = [c for c in ["Model_Name", "Target_Weight_Pct", "Holding"] if c in view.columns]
+    ascending = [True, False, True][: len(sort_cols)]
+    view = view.sort_values(sort_cols, ascending=ascending, kind="stable").reset_index(drop=True)
+    return view
+
+
+def holdings_watch_list(
+    scorecard: pd.DataFrame,
+    prior_scorecard: Optional[pd.DataFrame] = None,
+    *,
+    deterioration_threshold: float = 10.0,
+    disagreement_threshold: float = 15.0,
+) -> pd.DataFrame:
+    """Holdings the committee should explicitly review this cycle.
+
+    A row enters the watch list when any of the following is true:
+
+    - ``Overlay_Action`` is ``Replacement_Candidate`` or ``Review_Missing_Score``.
+    - Both 2023 and 2025 bands are ``WEAK`` (weak/weak).
+    - Either score dropped by at least ``deterioration_threshold`` vs. the
+      prior run (material deterioration).
+    - Either band crossed a threshold (STRONG→REVIEW/WEAK, REVIEW→WEAK).
+    - |Score_2023_Final − Score_2025_Final| ≥ ``disagreement_threshold``
+      (major 2023-vs-2025 disagreement).
+
+    Includes a ``Review_Reason`` column summarising why the row triggered.
+    Returns an empty frame when ``scorecard`` is empty.
+    """
+    if scorecard is None or scorecard.empty:
+        return pd.DataFrame()
+
+    df = scorecard.copy()
+    prior_idx = _prior_scores_by_symbol(prior_scorecard)
+
+    _BAND_RANK = {"STRONG": 0, "REVIEW": 1, "WEAK": 2}
+
+    reasons: List[str] = []
+    triggered: List[bool] = []
+    delta_23: List[Optional[float]] = []
+    delta_25: List[Optional[float]] = []
+    prior_23: List[Optional[float]] = []
+    prior_25: List[Optional[float]] = []
+
+    for _, r in df.iterrows():
+        why: List[str] = []
+
+        action = r.get("Overlay_Action")
+        if action == "Replacement_Candidate":
+            why.append("Replacement candidate")
+        if action == "Review_Missing_Score":
+            why.append("Missing from scored universe")
+
+        b23 = r.get("Score_Band_2023")
+        b25 = r.get("Score_Band_2025")
+        if b23 == "WEAK" and b25 == "WEAK":
+            why.append("Weak/Weak on both lenses")
+
+        s23 = r.get("Score_2023_Final")
+        s25 = r.get("Score_2025_Final")
+        if pd.notna(s23) and pd.notna(s25):
+            gap = abs(float(s23) - float(s25))
+            if gap >= disagreement_threshold:
+                why.append(f"2023/2025 disagreement ({gap:.0f} pt gap)")
+
+        key = f"{r.get('Model_Name')}||{r.get('Symbol')}"
+        p = prior_idx.get(key, {})
+        p23 = p.get("Score_2023_Final")
+        p25 = p.get("Score_2025_Final")
+        pb23 = p.get("Score_Band_2023")
+        pb25 = p.get("Score_Band_2025")
+        d23 = None
+        d25 = None
+        if pd.notna(p23) and pd.notna(s23):
+            d23 = float(s23) - float(p23)
+            if d23 <= -deterioration_threshold:
+                why.append(f"2023 score dropped {abs(d23):.0f} pts")
+        if pd.notna(p25) and pd.notna(s25):
+            d25 = float(s25) - float(p25)
+            if d25 <= -deterioration_threshold:
+                why.append(f"2025 score dropped {abs(d25):.0f} pts")
+        for label, cur_band, prior_band in (
+            ("2023 band", b23, pb23),
+            ("2025 band", b25, pb25),
+        ):
+            if not cur_band or not prior_band:
+                continue
+            if cur_band == prior_band:
+                continue
+            if _BAND_RANK.get(str(cur_band), -1) > _BAND_RANK.get(str(prior_band), -1):
+                why.append(f"{label} {prior_band}→{cur_band}")
+
+        reasons.append("; ".join(why))
+        triggered.append(bool(why))
+        delta_23.append(d23)
+        delta_25.append(d25)
+        prior_23.append(p23 if pd.notna(p23) else None)
+        prior_25.append(p25 if pd.notna(p25) else None)
+
+    df["Review_Reason"] = reasons
+    df["Delta_2023"] = delta_23
+    df["Delta_2025"] = delta_25
+    df["Score_2023_Prior"] = prior_23
+    df["Score_2025_Prior"] = prior_25
+
+    df = df[pd.Series(triggered, index=df.index)].copy()
+    if df.empty:
+        return df
+
+    # Alias display
+    if {"Symbol", "Scoring_Symbol"}.issubset(df.columns):
+        alias_disp = []
+        for _, r in df.iterrows():
+            orig = str(r.get("Symbol") or "")
+            score = str(r.get("Scoring_Symbol") or "")
+            if r.get("Alias_Applied") and orig and score and orig != score:
+                alias_disp.append(f"{orig} → {score}")
+            else:
+                alias_disp.append(orig)
+        df["Holding"] = alias_disp
+    else:
+        df["Holding"] = df.get("Symbol", "")
+
+    sleeve = df.get("Sleeve")
+    category = df.get("Category")
+    if sleeve is not None and category is not None:
+        df["Category_Sleeve"] = sleeve.fillna("").astype(str).where(
+            sleeve.notna() & (sleeve.astype(str) != ""), category
+        )
+    elif category is not None:
+        df["Category_Sleeve"] = category
+    else:
+        df["Category_Sleeve"] = ""
+
+    cols = [
+        "Model_Name", "Holding", "Category_Sleeve", "Target_Weight_Pct",
+        "Score_2023_Final", "Delta_2023", "Score_Band_2023",
+        "Score_2025_Final", "Delta_2025", "Score_Band_2025",
+        "Overlay_Action", "Review_Reason",
+    ]
+    present = [c for c in cols if c in df.columns]
+    view = df[present].copy()
+    for c in (
+        "Target_Weight_Pct",
+        "Score_2023_Final", "Delta_2023",
+        "Score_2025_Final", "Delta_2025",
+    ):
+        if c in view.columns:
+            view[c] = pd.to_numeric(view[c], errors="coerce").round(1)
+    sort_cols = [c for c in ["Model_Name", "Target_Weight_Pct", "Holding"] if c in view.columns]
+    ascending = [True, False, True][: len(sort_cols)]
+    return view.sort_values(sort_cols, ascending=ascending, kind="stable").reset_index(drop=True)
+
+
+def alias_notes(overlay_metadata: Optional[Dict[str, Any]]) -> List[Dict[str, str]]:
+    """Return alias-pair notes for committee display.
+
+    Merges the aliases actually observed in this run (from overlay metadata)
+    with the KNOWN_ALIASES rationale table. Only returns entries that apply
+    to this run — if ``overlay_metadata`` lacks ``alias_pairs`` the result is
+    empty, so absence is rendered cleanly in the packet.
+    """
+    if not overlay_metadata:
+        return []
+    pairs = overlay_metadata.get("alias_pairs") or []
+    rationale = {orig: (scoring, note) for orig, scoring, note in KNOWN_ALIASES}
+    notes: List[Dict[str, str]] = []
+    for p in pairs:
+        orig = str(p.get("original", "")).upper()
+        scoring = str(p.get("scoring", "")).upper()
+        if not orig or not scoring:
+            continue
+        reason = ""
+        if orig in rationale and rationale[orig][0].upper() == scoring:
+            reason = rationale[orig][1]
+        notes.append({"original": orig, "scoring": scoring, "reason": reason})
+    return notes
+
+
 def metadata_banner(metadata: Dict[str, Any]) -> Dict[str, str]:
     """Small dict of scalar fields safe to display in a header banner."""
     inputs = metadata.get("inputs", {}) or {}
@@ -411,6 +926,7 @@ def metadata_banner(metadata: Dict[str, Any]) -> Dict[str, str]:
 __all__ = [
     "PacketInputs",
     "ComparisonBundle",
+    "ModelOverlayBundle",
     "resolve_run_path",
     "load_packet_inputs",
     "top_by_score",
@@ -419,4 +935,14 @@ __all__ = [
     "dual_lens_matrix",
     "quadrant_counts",
     "metadata_banner",
+    "model_stackup",
+    "action_flag_weight_matrix",
+    "weak_holdings",
+    "current_holdings_scorecard",
+    "holdings_watch_list",
+    "replacement_candidates_for_committee",
+    "research_candidates_for_committee",
+    "alias_notes",
+    "OVERLAY_WEIGHT_COLUMNS",
+    "KNOWN_ALIASES",
 ]

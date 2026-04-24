@@ -1,0 +1,117 @@
+/* FundScore committee packet — supplemental CSS.
+ *
+ * Variables and the bulk of the aesthetic live in fundscore.scss. This file
+ * adds selector-level tweaks that don't compose cleanly in the SCSS layer
+ * (numeric-column alignment, banner / colophon styling, page-break hints
+ * injected as data-attributes).
+ */
+
+/* ---------- Run-date banner / colophon ----------
+ * The first markdown cell under the H1 is the banner (run date, inputs,
+ * archive path). Knock it down to a small meta block under the title.
+ */
+#quarto-document-content > p:first-of-type,
+#quarto-content main > p:first-of-type,
+main > p:first-of-type {
+  font-family: "Source Sans 3", "Inter", -apple-system, sans-serif;
+  font-size: 0.82rem;
+  color: #5a5e68;
+  line-height: 1.5;
+  background: transparent;
+  border-top: 1px solid #e6e1cf;
+  border-bottom: 1px solid #e6e1cf;
+  padding: 0.6rem 0;
+  margin: 0.1rem 0 1.6rem 0;
+  letter-spacing: 0.01em;
+}
+#quarto-document-content > p:first-of-type strong,
+main > p:first-of-type strong {
+  color: #1a1f2b;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-size: 0.76rem;
+  margin-right: 0.25rem;
+}
+main > p:first-of-type code {
+  font-size: 0.8rem;
+}
+
+/* ---------- Numeric column alignment heuristic ----------
+ * pandas dataframes render numeric cells with class 'data row* col*' and
+ * no intrinsic text-align. Right-align any cell whose content is purely
+ * numeric-looking using :has() where supported, with a tabular-nums fallback.
+ */
+.dataframe tbody td,
+.cell-output-display tbody td,
+table tbody td {
+  font-variant-numeric: tabular-nums lining-nums;
+}
+
+/* Right-align header + cell for columns that look numeric. The packet tables
+ * reliably put Symbol/Name/Category in the first 3–4 columns and numeric
+ * scores after; target ≥ 5th column conservatively. */
+.dataframe thead tr th:nth-child(n+5),
+.dataframe tbody tr td:nth-child(n+5),
+.cell-output-display thead tr th:nth-child(n+5),
+.cell-output-display tbody tr td:nth-child(n+5) {
+  text-align: right;
+}
+
+/* First column (often Symbol or Rank) — keep left, tight. */
+.dataframe thead tr th:first-child,
+.dataframe tbody tr td:first-child {
+  padding-left: 0 !important;
+  font-weight: 600;
+  color: #1a1f2b;
+}
+
+/* ---------- KPI / summary callouts ----------
+ * The exec summary list is styled by fundscore.scss. This gives strong-band
+ * emoji dots (🟢 🟡 🔴) a little more contrast.
+ */
+section#executive-summary li {
+  line-height: 1.55;
+}
+
+/* ---------- Section separators ----------
+ * Soft horizontal rule between top-level sections; added via ::before.
+ */
+main section.level1 + section.level1 {
+  margin-top: 1.5rem;
+}
+
+/* ---------- Scrollable wide tables ----------
+ * Dual-lens matrix and model stack-up can exceed the 860px body. Wrap in a
+ * scroll container, but don't draw a shadow.
+ */
+.cell-output-display {
+  overflow-x: auto;
+}
+.cell-output-display::-webkit-scrollbar { height: 6px; }
+.cell-output-display::-webkit-scrollbar-thumb {
+  background: #d6d2c8;
+  border-radius: 3px;
+}
+
+/* ---------- Figure titles ----------
+ * matplotlib puts the title on the axes; we don't need a second caption.
+ */
+.cell-output-display figure + figcaption:empty { display: none; }
+
+/* ---------- Hide Quarto's default document-level category chrome ---------- */
+.quarto-categories, .quarto-title-banner, .quarto-category-link {
+  display: none !important;
+}
+
+/* ---------- Print/PDF ---------- */
+@media print {
+  main > p:first-of-type {
+    border-color: #c6bf9c;
+    color: #2a2e38;
+  }
+  section.level2,
+  section.level2 > section.level3 {
+    page-break-inside: avoid;
+  }
+}
