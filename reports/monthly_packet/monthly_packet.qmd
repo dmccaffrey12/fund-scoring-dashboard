@@ -8,16 +8,26 @@ format:
     toc: true
     toc-depth: 3
     toc-location: left
+    toc-title: "In this packet"
     number-sections: true
-    theme: cosmo
+    theme:
+      light: [cosmo, fundscore.scss]
+    css: fundscore.css
     code-fold: true
     code-tools: false
+    code-summary: "Show code"
     embed-resources: true
-    fig-width: 9
-    fig-height: 5
-    page-layout: full
+    fig-width: 8.5
+    fig-height: 4.8
+    fig-dpi: 140
+    fig-format: svg
+    page-layout: article
     grid:
-      body-width: 1100px
+      body-width: 860px
+      sidebar-width: 260px
+      margin-width: 160px
+    link-external-newwindow: true
+    link-external-icon: false
 execute:
   echo: false
   warning: false
@@ -34,9 +44,86 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+
+# Register IPython display hooks so display(fig) inside conditional branches
+# returns an inline SVG rather than a bare <Figure repr>. Quarto's Jupyter
+# engine honours this.
+try:
+    from matplotlib_inline.backend_inline import set_matplotlib_formats  # type: ignore
+    set_matplotlib_formats("svg")
+except Exception:
+    pass
+
+# Committee-packet chart style: calm palette, report typography, minimal
+# gridlines. All figures in this packet inherit this rc config so charts
+# read as memo figures rather than default-Matplotlib dashboards.
+PACKET_PALETTE = {
+    "ink":          "#1a1f2b",
+    "muted":        "#5a5e68",
+    "rule":         "#c6bf9c",
+    "bg":           "#fafaf7",
+    "primary":      "#1f3b5b",  # navy
+    "accent":       "#8a5a2b",  # burnt sienna
+    "positive":     "#3d6b4a",
+    "caution":      "#a97a2b",
+    "negative":     "#8a2f2f",
+    "neutral":      "#6b6e77",
+    "highlight":    "#214d7b",
+}
+PACKET_CYCLE = [
+    PACKET_PALETTE["primary"],
+    PACKET_PALETTE["accent"],
+    PACKET_PALETTE["positive"],
+    PACKET_PALETTE["highlight"],
+    PACKET_PALETTE["caution"],
+    PACKET_PALETTE["negative"],
+    PACKET_PALETTE["neutral"],
+]
+
+plt.rcParams.update({
+    "figure.facecolor":   "#ffffff",
+    "axes.facecolor":     "#ffffff",
+    "savefig.facecolor":  "#ffffff",
+    "font.family":        ["Source Sans 3", "Inter", "Helvetica Neue", "DejaVu Sans"],
+    "font.size":          10.0,
+    "axes.titlesize":     11.5,
+    "axes.titleweight":   "semibold",
+    "axes.titlecolor":    PACKET_PALETTE["ink"],
+    "axes.titlepad":      10,
+    "axes.labelsize":     9.5,
+    "axes.labelcolor":    PACKET_PALETTE["muted"],
+    "axes.edgecolor":     PACKET_PALETTE["muted"],
+    "axes.linewidth":     0.6,
+    "axes.spines.top":    False,
+    "axes.spines.right":  False,
+    "axes.grid":          True,
+    "axes.axisbelow":     True,
+    "grid.color":         "#e8e3d4",
+    "grid.linewidth":     0.5,
+    "grid.linestyle":     "-",
+    "xtick.color":        PACKET_PALETTE["muted"],
+    "ytick.color":        PACKET_PALETTE["muted"],
+    "xtick.labelsize":    8.8,
+    "ytick.labelsize":    8.8,
+    "xtick.major.size":   3,
+    "ytick.major.size":   3,
+    "xtick.major.width":  0.5,
+    "ytick.major.width":  0.5,
+    "legend.frameon":     False,
+    "legend.fontsize":    8.8,
+    "legend.title_fontsize": 9.0,
+    "lines.linewidth":    1.5,
+    "axes.prop_cycle":    plt.cycler(color=PACKET_CYCLE),
+})
+
 HERE = Path(__file__).resolve().parent if "__file__" in globals() else Path.cwd()
 if str(HERE) not in sys.path:
     sys.path.insert(0, str(HERE))
+
+from IPython.display import Markdown, display  # noqa: E402
 
 from packet_data import (  # noqa: E402
     load_packet_inputs,
@@ -191,25 +278,25 @@ Markdown("\n\n".join(f"- {b}" for b in bullets))
 ```{python}
 #| tags: [model-stackup-intro]
 if overlay is None or overlay.summary.empty:
-    Markdown(
+    display(Markdown(
         "> ⚠️ No model-holdings overlay archived for this run. "
         "Upload a model-library CSV via the Streamlit monthly workflow page "
         "and re-archive to populate this section."
-    )
+    ))
 else:
-    Markdown(
+    display(Markdown(
         "Target-weighted average scores for each model, plus the weight share "
         "in each action-flag bucket. The two scores are kept **separate** — "
         "a model's 2023 and 2025 averages can diverge, and committee discussion "
         "should treat that divergence as a signal rather than a noise."
-    )
+    ))
 ```
 
 ```{python}
 #| tags: [model-stackup-table]
 if overlay is not None and not overlay.summary.empty:
     view = model_stackup(overlay.summary)
-    view
+    display(view)
 ```
 
 ```{python}
@@ -217,32 +304,32 @@ if overlay is not None and not overlay.summary.empty:
 if overlay is not None and not overlay.summary.empty and {
     "Model_Name", "Weighted_Score_2023", "Weighted_Score_2025",
 }.issubset(overlay.summary.columns):
-    import matplotlib
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
-
     s = overlay.summary.copy()
     s = s.dropna(subset=["Weighted_Score_2023", "Weighted_Score_2025"], how="all")
     s = s.sort_values("Model_Name", kind="stable")
     if not s.empty:
         idx = np.arange(len(s))
-        width = 0.4
-        fig, ax = plt.subplots(figsize=(9, max(3.5, 0.45 * len(s) + 1.5)))
+        width = 0.38
+        fig, ax = plt.subplots(figsize=(8.2, max(3.2, 0.42 * len(s) + 1.3)))
         ax.barh(idx - width / 2, s["Weighted_Score_2023"].fillna(0),
-                height=width, color="#4c78a8", label="2023 Performance")
+                height=width, color=PACKET_PALETTE["primary"],
+                label="2023 Performance")
         ax.barh(idx + width / 2, s["Weighted_Score_2025"].fillna(0),
-                height=width, color="#f58518", label="2025 Quality/Risk")
+                height=width, color=PACKET_PALETTE["accent"],
+                label="2025 Quality/Risk")
         ax.set_yticks(idx)
         ax.set_yticklabels(s["Model_Name"])
         ax.invert_yaxis()
         ax.set_xlabel("Target-weighted average score (0–100)")
-        ax.set_title("Target-Weighted Model Scores by Lens")
-        ax.axvline(80, color="grey", lw=0.6, ls="--", alpha=0.7)
-        ax.axvline(60, color="grey", lw=0.4, ls=":", alpha=0.6)
+        ax.set_title("Target-weighted model scores by lens", loc="left")
+        ax.axvline(80, color=PACKET_PALETTE["muted"], lw=0.5, ls="--", alpha=0.7)
+        ax.axvline(60, color=PACKET_PALETTE["muted"], lw=0.4, ls=":", alpha=0.6)
         ax.set_xlim(0, 105)
+        ax.grid(axis="y", visible=False)
         ax.legend(loc="lower right")
         plt.tight_layout()
-        plt.show()
+        display(fig)
+        plt.close(fig)
 ```
 
 # Action Flag Breakdown
@@ -250,15 +337,15 @@ if overlay is not None and not overlay.summary.empty and {
 ```{python}
 #| tags: [action-flag-intro]
 if overlay is None or overlay.summary.empty:
-    Markdown("> ⚠️ Action-flag breakdown unavailable without the model overlay.")
+    display(Markdown("> ⚠️ Action-flag breakdown unavailable without the model overlay."))
 else:
-    Markdown(
+    display(Markdown(
         "Weight share (%) of each model's portfolio by committee action flag. "
         "*High Conviction Hold* = strong on both lenses. *Replacement Candidate* "
         "= weak on at least one lens and failing on the other. *Performance-Led* "
         "and *Quality-Led* rows are the dual-lens disagreements that deserve "
         "the most narrative discussion."
-    )
+    ))
 ```
 
 ```{python}
@@ -266,9 +353,9 @@ else:
 if overlay is not None and not overlay.summary.empty:
     matrix = action_flag_weight_matrix(overlay.summary)
     if matrix.empty:
-        Markdown("_No action-flag weight columns present in the summary._")
+        display(Markdown("_No action-flag weight columns present in the summary._"))
     else:
-        matrix
+        display(matrix)
 ```
 
 ```{python}
@@ -276,33 +363,33 @@ if overlay is not None and not overlay.summary.empty:
 if overlay is not None and not overlay.summary.empty:
     matrix = action_flag_weight_matrix(overlay.summary)
     if not matrix.empty:
-        import matplotlib
-        matplotlib.use("Agg")
-        import matplotlib.pyplot as plt
-
         palette = {
-            "High Conviction Hold": "#2ca02c",
-            "Performance-Led / Review Quality": "#1f77b4",
-            "Quality-Led / Review Patience": "#9467bd",
-            "Replacement Candidate": "#d62728",
-            "Unscored / Coverage Gap": "#7f7f7f",
+            "High Conviction Hold":             PACKET_PALETTE["positive"],
+            "Performance-Led / Review Quality": PACKET_PALETTE["primary"],
+            "Quality-Led / Review Patience":    PACKET_PALETTE["caution"],
+            "Replacement Candidate":            PACKET_PALETTE["negative"],
+            "Unscored / Coverage Gap":          PACKET_PALETTE["neutral"],
         }
-        fig, ax = plt.subplots(figsize=(9, max(3.0, 0.5 * len(matrix) + 1.5)))
+        fig, ax = plt.subplots(figsize=(8.2, max(3.0, 0.5 * len(matrix) + 1.4)))
         bottom = np.zeros(len(matrix))
         y = np.arange(len(matrix))
         for col in matrix.columns:
             vals = matrix[col].fillna(0).to_numpy()
-            ax.barh(y, vals, left=bottom, height=0.65,
-                    color=palette.get(col, "#bbbbbb"), label=col)
+            ax.barh(y, vals, left=bottom, height=0.62,
+                    color=palette.get(col, "#bbbbbb"),
+                    edgecolor="#ffffff", linewidth=0.6, label=col)
             bottom = bottom + vals
         ax.set_yticks(y)
         ax.set_yticklabels(matrix.index)
         ax.invert_yaxis()
         ax.set_xlabel("Weight share (%)")
-        ax.set_title("Action-Flag Weight Mix by Model")
-        ax.legend(loc="lower right", bbox_to_anchor=(1.0, -0.15), ncol=2, fontsize=8)
+        ax.set_title("Action-flag weight mix by model", loc="left")
+        ax.grid(axis="y", visible=False)
+        ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.12),
+                  ncol=3, fontsize=8, frameon=False)
         plt.tight_layout()
-        plt.show()
+        display(fig)
+        plt.close(fig)
 ```
 
 # Model-by-Model Review
@@ -310,13 +397,13 @@ if overlay is not None and not overlay.summary.empty:
 ```{python}
 #| tags: [model-by-model-intro]
 if overlay is None or overlay.scorecard.empty:
-    Markdown("> ⚠️ Holding-level scorecard unavailable without the model overlay.")
+    display(Markdown("> ⚠️ Holding-level scorecard unavailable without the model overlay."))
 else:
-    Markdown(
+    display(Markdown(
         "Each model's full holdings enriched with dual-lens scores, bands, "
         "quadrant, and the overlay's committee action flag. Rows are sorted "
         "by consensus rank (best first); unscored holdings sink to the bottom."
-    )
+    ))
 ```
 
 ```{python}
@@ -339,7 +426,7 @@ if overlay is not None and not overlay.scorecard.empty:
         blocks.append(f"## {model_name}")
         blocks.append(view.to_markdown(index=False))
         blocks.append("")
-    Markdown("\n\n".join(blocks))
+    display(Markdown("\n\n".join(blocks)))
 ```
 
 # Replacement Candidates
@@ -347,23 +434,23 @@ if overlay is not None and not overlay.scorecard.empty:
 ```{python}
 #| tags: [replacement-intro]
 if overlay is None or overlay.replacement_candidates.empty:
-    Markdown(
+    display(Markdown(
         "> ✅ No replacement candidates surfaced this cycle. Either no current "
         "holding is flagged `Replacement_Candidate` or the overlay didn't "
         "produce a populated candidate pool."
-    )
+    ))
 else:
-    Markdown(
+    display(Markdown(
         "For each current holding flagged `Replacement_Candidate`, the top "
         "same-category alternates ranked by consensus. These are suggestions "
         "to anchor committee discussion — not an automated buy list."
-    )
+    ))
 ```
 
 ```{python}
 #| tags: [replacement-table]
 if overlay is not None and not overlay.replacement_candidates.empty:
-    replacement_candidates_for_committee(overlay.replacement_candidates, top_per_holding=3)
+    display(replacement_candidates_for_committee(overlay.replacement_candidates, top_per_holding=3))
 ```
 
 # Research Candidates
@@ -371,25 +458,25 @@ if overlay is not None and not overlay.replacement_candidates.empty:
 ```{python}
 #| tags: [research-intro]
 if overlay is None or overlay.research_candidates.empty:
-    Markdown(
+    display(Markdown(
         "> ℹ️ No research candidates in the overlay output. A research "
         "candidate is a high-consensus fund **not held** by any current "
         "model — absence usually means the universe's top ideas are already "
         "represented."
-    )
+    ))
 else:
-    Markdown(
+    display(Markdown(
         "Top-ranked funds in the broader scored universe that are **not** "
         "currently held by any model. Ordered by consensus rank — best ideas "
         "first. These are candidates for deeper due diligence, not automatic "
         "adds."
-    )
+    ))
 ```
 
 ```{python}
 #| tags: [research-table]
 if overlay is not None and not overlay.research_candidates.empty:
-    research_candidates_for_committee(overlay.research_candidates, top_n=25)
+    display(research_candidates_for_committee(overlay.research_candidates, top_n=25))
 ```
 
 # Dual-Lens Universe Context
@@ -410,7 +497,7 @@ Markdown(
 #| tags: [consensus]
 top = top_by_consensus(table, top_n=TOP_N)
 if top.empty:
-    Markdown("> ⚠️ Consensus view unavailable — need `Consensus_Rank` or both score columns.")
+    display(Markdown("> ⚠️ Consensus view unavailable — need `Consensus_Rank` or both score columns."))
 else:
     cols = [c for c in [
         "Symbol", "Name", "Category", "Fund_Type",
@@ -421,7 +508,7 @@ else:
     for c in ("Score_2023_Final", "Score_2025_Final"):
         if c in view.columns:
             view[c] = view[c].round(1)
-    view
+    display(view)
 ```
 
 ## Top 50 by Performance Lens (2023)
@@ -430,7 +517,7 @@ else:
 #| tags: [perf-2023]
 top23 = top_by_score(table, "Score_2023_Final", top_n=TOP_N)
 if top23.empty:
-    Markdown("> ⚠️ 2023 scores missing — performance lens unavailable.")
+    display(Markdown("> ⚠️ 2023 scores missing — performance lens unavailable."))
 else:
     cols = [c for c in [
         "Symbol", "Name", "Category", "Fund_Type",
@@ -441,7 +528,7 @@ else:
         view["Score_2023_Final"] = view["Score_2023_Final"].round(1)
     if "Data_Coverage_2023" in view.columns:
         view["Data_Coverage_2023"] = view["Data_Coverage_2023"].round(2)
-    view
+    display(view)
 ```
 
 ## Top 50 by Quality/Risk Lens (2025)
@@ -450,7 +537,7 @@ else:
 #| tags: [quality-2025]
 top25 = top_by_score(table, "Score_2025_Final", top_n=TOP_N)
 if top25.empty:
-    Markdown("> ⚠️ 2025 scores missing — quality/risk lens unavailable.")
+    display(Markdown("> ⚠️ 2025 scores missing — quality/risk lens unavailable."))
 else:
     cols = [c for c in [
         "Symbol", "Name", "Category", "Fund_Type",
@@ -461,7 +548,7 @@ else:
         view["Score_2025_Final"] = view["Score_2025_Final"].round(1)
     if "Data_Coverage_2025" in view.columns:
         view["Data_Coverage_2025"] = view["Data_Coverage_2025"].round(2)
-    view
+    display(view)
 ```
 
 ## Disagreement List
@@ -470,10 +557,10 @@ else:
 #| tags: [disagreements]
 disagree = disagreement_list(table, min_gap=DISAGREEMENT_GAP)
 if disagree.empty:
-    Markdown(
+    display(Markdown(
         f"> No funds meet the disagreement threshold "
         f"(|Score_Gap| ≥ {DISAGREEMENT_GAP:.0f} or differing bands)."
-    )
+    ))
 else:
     cols = [c for c in [
         "Symbol", "Name", "Category", "Fund_Type",
@@ -487,7 +574,7 @@ else:
             view[c] = view[c].round(1)
     view.index = view.index + 1
     view.index.name = "Rank"
-    view
+    display(view)
 ```
 
 Funds where the 2023 and 2025 lenses tell materially different stories. These
@@ -499,15 +586,12 @@ Quality-Led action flags.
 ```{python}
 #| tags: [dual-lens-scatter]
 if {"Score_2023_Final", "Score_2025_Final"}.issubset(table.columns):
-    import matplotlib
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
-
     plot_df = table.dropna(subset=["Score_2023_Final", "Score_2025_Final"])
-    fig, ax = plt.subplots(figsize=(9, 6.5))
+    fig, ax = plt.subplots(figsize=(8.2, 6.0))
     ax.scatter(
         plot_df["Score_2023_Final"], plot_df["Score_2025_Final"],
-        s=6, alpha=0.22, color="#1f77b4", rasterized=True,
+        s=6, alpha=0.18, color=PACKET_PALETTE["primary"], rasterized=True,
+        label="Universe",
     )
     # Overlay currently-held scoring symbols when available.
     if overlay is not None and not overlay.scorecard.empty:
@@ -517,7 +601,9 @@ if {"Score_2023_Final", "Score_2025_Final"}.issubset(table.columns):
             if not held_plot.empty:
                 ax.scatter(
                     held_plot["Score_2023_Final"], held_plot["Score_2025_Final"],
-                    s=26, color="#d62728", label="Currently held", zorder=3,
+                    s=24, color=PACKET_PALETTE["negative"],
+                    edgecolor="#ffffff", linewidths=0.5,
+                    label="Currently held", zorder=3,
                 )
     if "Consensus_Rank" in plot_df.columns:
         top25_plot = plot_df.nsmallest(25, "Consensus_Rank")
@@ -526,32 +612,35 @@ if {"Score_2023_Final", "Score_2025_Final"}.issubset(table.columns):
         top25_plot = plot_df2.nlargest(25, "_consensus")
     ax.scatter(
         top25_plot["Score_2023_Final"], top25_plot["Score_2025_Final"],
-        s=38, facecolors="none", edgecolors="#2ca02c", linewidths=1.2,
-        label="Top 25 consensus", zorder=4,
+        s=42, facecolors="none", edgecolors=PACKET_PALETTE["positive"],
+        linewidths=1.2, label="Top 25 consensus", zorder=4,
     )
-    ax.axhline(80, color="grey", lw=0.8, ls="--")
-    ax.axvline(80, color="grey", lw=0.8, ls="--")
-    ax.axhline(60, color="grey", lw=0.5, ls=":")
-    ax.axvline(60, color="grey", lw=0.5, ls=":")
-    ax.set_xlabel("2023 Performance Score")
-    ax.set_ylabel("2025 Quality / Risk Score")
-    ax.set_title("Dual-Lens Matrix — Performance vs. Quality")
+    for thr in (80,):
+        ax.axhline(thr, color=PACKET_PALETTE["muted"], lw=0.5, ls="--", alpha=0.7)
+        ax.axvline(thr, color=PACKET_PALETTE["muted"], lw=0.5, ls="--", alpha=0.7)
+    for thr in (60,):
+        ax.axhline(thr, color=PACKET_PALETTE["muted"], lw=0.4, ls=":", alpha=0.6)
+        ax.axvline(thr, color=PACKET_PALETTE["muted"], lw=0.4, ls=":", alpha=0.6)
+    ax.set_xlabel("2023 Performance score")
+    ax.set_ylabel("2025 Quality / Risk score")
+    ax.set_title("Dual-lens matrix — performance vs. quality", loc="left")
     ax.set_xlim(0, 105)
     ax.set_ylim(0, 115)
     ax.legend(loc="lower right")
     plt.tight_layout()
-    plt.show()
+    display(fig)
+    plt.close(fig)
 else:
-    Markdown("> ⚠️ Dual-lens scatter unavailable — both score columns required.")
+    display(Markdown("> ⚠️ Dual-lens scatter unavailable — both score columns required."))
 ```
 
 ```{python}
 #| tags: [dual-lens-table]
 matrix = dual_lens_matrix(table)
 if matrix.empty:
-    Markdown("> ⚠️ Band matrix unavailable — `Score_Band_2023` / `Score_Band_2025` missing.")
+    display(Markdown("> ⚠️ Band matrix unavailable — `Score_Band_2023` / `Score_Band_2025` missing."))
 else:
-    matrix
+    display(matrix)
 ```
 
 Rows = 2025 Quality/Risk band. Columns = 2023 Performance band.
@@ -562,7 +651,7 @@ Rows = 2025 Quality/Risk band. Columns = 2023 Performance band.
 if "Quadrant" in table.columns:
     q = quadrant_counts(table).reset_index()
     q.columns = ["Quadrant", "Count"]
-    q
+    display(q)
 ```
 
 # What Changed
@@ -570,14 +659,14 @@ if "Quadrant" in table.columns:
 ```{python}
 #| tags: [what-changed]
 if comparison is None:
-    Markdown(
+    display(Markdown(
         "> **No prior run archive available.** Month-over-month change "
         "tables will populate automatically once a second run exists under "
         "`streamlit/runs/`. Create a comparison with:\n"
         "> ```bash\n"
         "> python streamlit/run_comparison.py compare\n"
         "> ```"
-    )
+    ))
 else:
     s = comparison.summary
     header = (
@@ -586,7 +675,7 @@ else:
         f"Latest universe: **{int(s.get('latest_row_count', 0)):,}** funds · "
         f"Prior universe: **{int(s.get('prior_row_count', 0)):,}** funds."
     )
-    Markdown(header)
+    display(Markdown(header))
 ```
 
 ```{python}
@@ -605,13 +694,13 @@ if comparison is not None:
     band_counts = s.get("band_change_count_by_column") or {}
     for col, n in sorted(band_counts.items()):
         rows.append((f"Band changes · {col}", int(n)))
-    pd.DataFrame(rows, columns=["Change", "Count"])
+    display(pd.DataFrame(rows, columns=["Change", "Count"]))
 ```
 
 ```{python}
 #| tags: [score-movers]
 if comparison is not None and not comparison.score_movers.empty:
-    Markdown("## Biggest score movers")
+    display(Markdown("## Biggest score movers"))
     mv = comparison.score_movers.copy()
     sort_key = "Abs_Delta" if "Abs_Delta" in mv.columns else ("Delta" if "Delta" in mv.columns else None)
     if sort_key == "Abs_Delta":
@@ -624,27 +713,27 @@ if comparison is not None and not comparison.score_movers.empty:
     for c in ("Value_Latest", "Value_Prior", "Delta", "Abs_Delta"):
         if c in mv.columns:
             mv[c] = mv[c].round(2)
-    mv
+    display(mv)
 elif comparison is not None:
-    Markdown("_No score movers in this window._")
+    display(Markdown("_No score movers in this window._"))
 ```
 
 ```{python}
 #| tags: [band-changes]
 if comparison is not None and not comparison.band_changes.empty:
-    Markdown("## Band changes")
-    comparison.band_changes.head(50).reset_index(drop=True)
+    display(Markdown("## Band changes"))
+    display(comparison.band_changes.head(50).reset_index(drop=True))
 elif comparison is not None:
-    Markdown("_No band changes in this window._")
+    display(Markdown("_No band changes in this window._"))
 ```
 
 ```{python}
 #| tags: [quadrant-changes]
 if comparison is not None and not comparison.quadrant_changes.empty:
-    Markdown("## Quadrant changes")
-    comparison.quadrant_changes.head(50).reset_index(drop=True)
+    display(Markdown("## Quadrant changes"))
+    display(comparison.quadrant_changes.head(50).reset_index(drop=True))
 elif comparison is not None:
-    Markdown("_No quadrant changes in this window._")
+    display(Markdown("_No quadrant changes in this window._"))
 ```
 
 ```{python}
@@ -660,7 +749,7 @@ if comparison is not None:
         blocks.append("## Removed funds this cycle\n")
         blocks.append(comparison.removed_funds[cols_rm].head(50).to_markdown(index=False))
     if blocks:
-        Markdown("\n\n".join(blocks))
+        display(Markdown("\n\n".join(blocks)))
 ```
 
 # Data Quality & Alias Reconciliation
@@ -717,11 +806,11 @@ def _collect_intake_findings(report):
 
 
 if intake is None:
-    Markdown(
+    display(Markdown(
         "_No `intake_report.json` in this run — YCharts preflight was not run. "
         "Re-archive with `python streamlit/run_archive.py create ... --preflight warn` "
         "to capture intake findings alongside the next packet._"
-    )
+    ))
 else:
     failed = intake.get("failed")
     counts = intake.get("finding_counts") or {}
@@ -757,7 +846,7 @@ else:
         blocks.append("")
     if not findings:
         blocks.append("_No findings recorded._")
-    Markdown("\n".join(blocks))
+    display(Markdown("\n".join(blocks)))
 ```
 
 ## Alias reconciliation
@@ -765,10 +854,10 @@ else:
 ```{python}
 #| tags: [alias-reconciliation]
 if overlay is None:
-    Markdown(
+    display(Markdown(
         "_Alias reconciliation only applies when the model-holdings overlay "
         "is present._"
-    )
+    ))
 else:
     meta = overlay.metadata or {}
     applied_rows = int(meta.get("alias_applied_rows", 0))
@@ -795,20 +884,20 @@ else:
     known_df = pd.DataFrame(
         [{"Original": o, "Scoring": s, "Reason": r} for o, s, r in KNOWN_ALIASES],
     )
-    Markdown(header)
+    display(Markdown(header))
     print("Applied this cycle:")
     # Trigger printing the applied aliases table:
     display_applied = df if not df.empty else pd.DataFrame({"—": ["(none applied this cycle)"]})
-    display_applied
+    display(display_applied)
 ```
 
 ```{python}
 #| tags: [alias-known]
 if overlay is not None:
-    Markdown("**Known share-class consolidations (baked-in defaults):**")
-    pd.DataFrame(
+    display(Markdown("**Known share-class consolidations (baked-in defaults):**"))
+    display(pd.DataFrame(
         [{"Original": o, "Scoring": s, "Reason": r} for o, s, r in KNOWN_ALIASES],
-    )
+    ))
 ```
 
 # Methodology Notes

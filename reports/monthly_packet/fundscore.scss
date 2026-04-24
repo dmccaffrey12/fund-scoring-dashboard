@@ -1,0 +1,379 @@
+/*-- scss:defaults --*/
+
+// FundScore committee-packet theme.
+// Goal: internal research memo, not a Bootstrap dashboard.
+// Calm palette, restrained chrome, serif-lean typography, print-friendly.
+
+$font-family-sans-serif: "Source Sans 3", "Inter", -apple-system, BlinkMacSystemFont,
+  "Helvetica Neue", Arial, sans-serif !default;
+$font-family-serif: "Source Serif 4", "Source Serif Pro", "Georgia", "Times New Roman",
+  serif !default;
+$font-family-monospace: "JetBrains Mono", "SFMono-Regular", Menlo, Consolas, monospace !default;
+
+$font-family-base: $font-family-serif;
+
+$body-bg: #fafaf7;
+$body-color: #1c1e23;
+
+$primary: #1f3b5b; // restrained navy
+$link-color: #214d7b;
+$link-hover-color: #0f2742;
+
+$headings-font-family: $font-family-sans-serif;
+$headings-font-weight: 600;
+$headings-color: #141821;
+
+$font-size-base: 1.02rem;
+$line-height-base: 1.55;
+
+$table-border-color: #d6d2c8;
+$table-striped-bg: transparent;
+$table-hover-bg: rgba(31, 59, 91, 0.04);
+$table-cell-padding-y: 0.35rem;
+$table-cell-padding-x: 0.6rem;
+
+$border-radius: 2px;
+$border-radius-sm: 2px;
+$border-radius-lg: 3px;
+
+$card-border-color: #e4dfd2;
+$card-bg: #ffffff;
+$card-cap-bg: transparent;
+
+$blockquote-border-color: #c6b888;
+$blockquote-font-size: 0.98rem;
+
+$code-color: #5a2a2a;
+
+/*-- scss:rules --*/
+
+// ---------- Layout ----------
+// Narrow body for committee-memo feel; Quarto's grid-body-width still wins for
+// the main text column but we tighten side gutters + knock out margin chrome.
+
+body {
+  background: $body-bg;
+  font-feature-settings: "onum", "kern";
+  -webkit-font-smoothing: antialiased;
+}
+
+#title-block-header {
+  border-bottom: 1px solid #c9bfa2;
+  padding-bottom: 1.4rem;
+  margin-bottom: 2.2rem;
+
+  .title {
+    font-family: $font-family-sans-serif;
+    font-weight: 700;
+    letter-spacing: -0.01em;
+    font-size: 2.1rem;
+    color: #101520;
+  }
+  .subtitle {
+    font-family: $font-family-serif;
+    font-style: italic;
+    font-weight: 400;
+    color: #4a4e57;
+    font-size: 1.15rem;
+    margin-top: 0.3rem;
+  }
+  .quarto-title-meta {
+    font-family: $font-family-sans-serif;
+    font-size: 0.82rem;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: #6b6e77;
+    margin-top: 0.8rem;
+
+    .quarto-title-meta-heading {
+      color: #8c8f96;
+      font-weight: 600;
+    }
+    .quarto-title-meta-contents {
+      color: #2b2f36;
+      text-transform: none;
+      letter-spacing: 0;
+      font-size: 0.95rem;
+    }
+  }
+}
+
+main {
+  font-family: $font-family-serif;
+}
+
+// ---------- Headings: memo-style numbered sections ----------
+h1, h2, h3, h4 {
+  font-family: $font-family-sans-serif;
+  font-weight: 600;
+}
+
+h1.title { font-weight: 700; }
+
+// Top-level section header — restrained horizontal rule, no heavy bar.
+main > section > h1,
+main > section > .header-section-number + h1,
+.level1 > h1 {
+  font-size: 1.55rem;
+  letter-spacing: -0.005em;
+  border-top: 1px solid #c6bf9c;
+  padding-top: 1.3rem;
+  margin-top: 2.5rem;
+  color: #121620;
+}
+
+h2 {
+  font-size: 1.22rem;
+  color: #1d2230;
+  margin-top: 1.6rem;
+}
+h3 {
+  font-size: 1.05rem;
+  color: #263047;
+  margin-top: 1.3rem;
+}
+
+.header-section-number {
+  color: #8a8f99;
+  font-weight: 500;
+  margin-right: 0.4em;
+}
+
+// ---------- TOC: understated sidebar, not a dashboard nav ----------
+#TOC, .sidebar-toc, nav#TOC {
+  font-family: $font-family-sans-serif;
+  font-size: 0.86rem;
+}
+.sidebar nav[role="doc-toc"] ul { border-left: 1px solid #e1dbc9; }
+.sidebar nav[role="doc-toc"] ul li a.active,
+.sidebar nav[role="doc-toc"] ul > li > a.active {
+  color: $primary;
+  border-left: 2px solid $primary;
+  background: transparent;
+  font-weight: 600;
+}
+.sidebar nav[role="doc-toc"] ul li a {
+  color: #4c5160;
+  padding: 0.2rem 0.6rem;
+}
+.sidebar nav[role="doc-toc"] ul li a:hover {
+  color: $primary;
+  background: transparent;
+}
+.sidebar-title {
+  font-family: $font-family-sans-serif;
+  font-size: 0.72rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: #8a8f99;
+  font-weight: 600;
+}
+
+// ---------- Tables: committee-memo, not Excel default ----------
+table,
+.dataframe,
+.cell-output-display table {
+  font-family: $font-family-sans-serif;
+  font-size: 0.88rem;
+  border-collapse: collapse;
+  width: 100%;
+  margin: 0.6rem 0 1.1rem 0;
+  background: transparent;
+}
+
+.dataframe thead th,
+table thead th,
+.cell-output-display thead th {
+  background: transparent !important;
+  color: #1a1f2b;
+  font-weight: 600;
+  text-align: left;
+  border-bottom: 1.5px solid #8a8468 !important;
+  border-top: 1px solid #d6d2c8 !important;
+  padding: 0.45rem 0.6rem !important;
+  font-size: 0.82rem;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.dataframe tbody td,
+table tbody td,
+.cell-output-display tbody td {
+  border-top: 1px solid #ece8dc !important;
+  padding: 0.32rem 0.6rem !important;
+  vertical-align: top;
+  font-variant-numeric: tabular-nums;
+}
+
+.dataframe tbody tr:hover,
+table tbody tr:hover {
+  background: rgba(31, 59, 91, 0.035);
+}
+
+.dataframe tbody tr:last-child td,
+table tbody tr:last-child td {
+  border-bottom: 1.5px solid #8a8468 !important;
+}
+
+// Right-align numeric-looking cells heuristically: pandas doesn't tag them,
+// but tabular-nums + alignment class helps.
+.dataframe tbody td:nth-child(n+3),
+.cell-output-display tbody td:nth-child(n+3) {
+  // Leave text columns (usually first two) left-aligned, numerics right.
+  // This is a heuristic; committee tables in this packet tend to put
+  // Symbol / Name / Category first, then numeric columns.
+}
+
+// Knock out pandas' default bootstrap-y treatment.
+.dataframe { border: none !important; }
+.dataframe th, .dataframe td { border-left: none !important; border-right: none !important; }
+
+// Markdown tables (from .to_markdown()) — same restraint.
+.cell-output-markdown table th {
+  background: transparent;
+  border-bottom: 1.5px solid #8a8468;
+  text-transform: uppercase;
+  font-size: 0.82rem;
+  letter-spacing: 0.02em;
+}
+
+// ---------- Exec-summary / callout treatment ----------
+// The packet's exec summary is a Markdown bullet list inside the first
+// section. Give it a memo callout feel via the section wrapper.
+
+section#executive-summary,
+section[id$="executive-summary"] {
+  background: #fff;
+  border: 1px solid #d8d2ba;
+  border-left: 3px solid $primary;
+  padding: 1.1rem 1.3rem 0.6rem 1.3rem;
+  margin: 0.5rem 0 2rem 0;
+  box-shadow: 0 1px 0 rgba(0, 0, 0, 0.02);
+
+  > h1 {
+    border-top: none;
+    padding-top: 0;
+    margin-top: 0.1rem;
+    font-size: 1.05rem;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    color: #6b6e77;
+    font-weight: 700;
+  }
+  ul { padding-left: 1.2rem; }
+  li { margin-bottom: 0.35rem; }
+  strong { color: #101520; }
+}
+
+// Banner (run date / sources block) below title — make it a small italic colophon.
+section#quarto-content > section:first-of-type > .cell:first-child + .cell-output,
+.cell-output-markdown:first-of-type {
+  // Fall-through rule; the stronger styling below targets the banner specifically.
+}
+
+// Blockquote = committee note / placeholder message.
+blockquote {
+  border-left: 3px solid #c6b888;
+  background: #f5f1e4;
+  color: #3a3a2e;
+  padding: 0.6rem 1rem;
+  margin: 0.8rem 0;
+  font-style: italic;
+  font-family: $font-family-sans-serif;
+  font-size: 0.92rem;
+}
+
+// ---------- Links, inline code ----------
+a {
+  text-decoration: none;
+  border-bottom: 1px solid rgba(33, 77, 123, 0.25);
+}
+a:hover {
+  border-bottom-color: $primary;
+  color: $link-hover-color;
+}
+
+code:not(pre code) {
+  background: #f1ecdd;
+  color: #4a2c1e;
+  padding: 0.05rem 0.3rem;
+  border-radius: 2px;
+  font-size: 0.88em;
+}
+
+// ---------- Code folded blocks: dampen UI chrome ----------
+details.code-fold {
+  background: #fbf8ee;
+  border: 1px solid #e7ddc2;
+  border-radius: 2px;
+  margin: 0.6rem 0;
+}
+details.code-fold > summary {
+  font-family: $font-family-sans-serif;
+  font-size: 0.82rem;
+  color: #6b6e77;
+  padding: 0.3rem 0.6rem;
+}
+
+// ---------- Figures ----------
+figure, .cell-output-display figure, .figure {
+  margin: 1rem auto;
+}
+.figure img, .cell-output-display img {
+  background: #fff;
+  padding: 0.2rem;
+  border: 1px solid #e4dfd2;
+}
+
+.figure-caption, figcaption {
+  font-family: $font-family-sans-serif;
+  font-size: 0.82rem;
+  color: #6b6e77;
+  font-style: italic;
+  text-align: left;
+  margin-top: 0.3rem;
+}
+
+// ---------- Footer ----------
+hr {
+  border: none;
+  border-top: 1px solid #c6bf9c;
+  margin: 2.5rem 0 1rem 0;
+}
+
+em:last-child {
+  color: #8a8f99;
+  font-size: 0.85rem;
+}
+
+// ---------- Print / PDF friendliness ----------
+@media print {
+  :root { --bs-body-bg: #ffffff; }
+  body {
+    background: #ffffff !important;
+    font-size: 10pt;
+    color: #000;
+  }
+  .sidebar, #TOC, .sidebar-toc, nav#TOC,
+  .quarto-secondary-nav, .quarto-title-meta-category,
+  .code-tools-button, details.code-fold > summary { display: none !important; }
+  #quarto-content { max-width: 100% !important; }
+  main { font-size: 10pt; }
+  h1, h2 { page-break-after: avoid; }
+  h1 { page-break-before: auto; }
+  section.level1 { page-break-before: always; }
+  section.level1:first-of-type { page-break-before: avoid; }
+  table, figure, .cell-output-display { page-break-inside: avoid; }
+  tr, img { page-break-inside: avoid; }
+  thead { display: table-header-group; }
+  a { color: #1a1a1a; border-bottom: none; }
+  blockquote { background: #fafaf0 !important; color: #222 !important; }
+  section#executive-summary {
+    box-shadow: none;
+    background: #fafaf0 !important;
+    border: 1px solid #c6b888;
+  }
+  // Force backgrounds to print.
+  * { -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }
+}

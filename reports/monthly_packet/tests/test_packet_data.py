@@ -554,6 +554,50 @@ def test_qmd_code_blocks_importable():
     assert not missing, f"qmd imports symbols not in packet_data: {missing}"
 
 
+def test_theme_assets_present_and_wired_in():
+    """The committee packet depends on a custom SCSS theme + companion CSS.
+
+    This test keeps the render contract honest: if either asset goes missing
+    or the qmd stops referencing them, the packet falls back to default
+    Bootstrap and the committee-memo aesthetic disappears.
+    """
+    scss_path = os.path.abspath(os.path.join(_PKT_DIR, "fundscore.scss"))
+    css_path = os.path.abspath(os.path.join(_PKT_DIR, "fundscore.css"))
+    qmd_path = os.path.abspath(os.path.join(_PKT_DIR, "monthly_packet.qmd"))
+
+    assert os.path.isfile(scss_path), "fundscore.scss theme file is missing"
+    assert os.path.isfile(css_path), "fundscore.css companion file is missing"
+
+    scss = open(scss_path).read()
+    css = open(css_path).read()
+    qmd = open(qmd_path).read()
+
+    # SCSS must expose both the defaults and rules layers Quarto expects.
+    assert "/*-- scss:defaults --*/" in scss
+    assert "/*-- scss:rules --*/" in scss
+
+    # qmd must reference both theme assets so render picks them up.
+    assert "fundscore.scss" in qmd, "qmd no longer references fundscore.scss"
+    assert "fundscore.css" in qmd, "qmd no longer references fundscore.css"
+
+    # Print/PDF block is a committee requirement — make sure it stays present.
+    assert "@media print" in scss, "print/PDF media block missing from theme"
+
+
+def test_qmd_uses_packet_palette_for_charts():
+    """Charts in the packet should pull from the shared PACKET_PALETTE so the
+    committee sees consistent colours across figures. Catch future drift by
+    ensuring the palette is defined and at least one chart references it.
+    """
+    qmd_path = os.path.abspath(os.path.join(_PKT_DIR, "monthly_packet.qmd"))
+    qmd = open(qmd_path).read()
+    assert "PACKET_PALETTE" in qmd, "shared PACKET_PALETTE not declared in qmd"
+    assert qmd.count("PACKET_PALETTE[") >= 3, (
+        "expected multiple chart references to PACKET_PALETTE — charts may "
+        "have reverted to ad-hoc colours"
+    )
+
+
 def test_errors_when_no_run_found():
     with tempfile.TemporaryDirectory() as td:
         try:
@@ -581,6 +625,8 @@ def _run_all():
         test_overlay_derived_views,
         test_overlay_derived_views_empty_safe,
         test_qmd_code_blocks_importable,
+        test_theme_assets_present_and_wired_in,
+        test_qmd_uses_packet_palette_for_charts,
         test_errors_when_no_run_found,
     ]
     for t in tests:
