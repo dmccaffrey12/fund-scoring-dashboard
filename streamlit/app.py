@@ -2374,6 +2374,152 @@ elif page == "Monthly Workflow":
                     use_container_width=True, hide_index=True,
                 )
 
+    # ---- Step 4c: Replacement Workbench (per-ticker research) ----
+    st.markdown("### 4c · Replacement Workbench (per-ticker)")
+    st.caption(
+        "One-off research view for **replacing a single model holding**. "
+        "Separate from the monthly committee packet — the overlay above "
+        "scans every model; this workbench answers 'if one holding isn't "
+        "acceptable, what should replace it?' with a focused same-category "
+        "short list. Share-class aliases (e.g. `PRBLX` → `PRILX`) are "
+        "applied automatically."
+    )
+
+    _ss.setdefault("mw_rw_last_ticker", None)
+    _ss.setdefault("mw_rw_last_run_date", None)
+
+    rw_run_date = _ss.get("mw_overlay_date") or _ss.get("mw_last_run_date")
+    if rw_run_date is None:
+        _rw_runs = workflow_ui.available_runs()
+        if _rw_runs:
+            rw_run_date = _rw_runs[-1]
+
+    if rw_run_date is None:
+        st.caption("Create a run archive above to enable the workbench.")
+    else:
+        try:
+            rw_run = _load_run(rw_run_date)
+            rw_universe = rw_run["table"]
+        except Exception:
+            rw_run = None
+            rw_universe = pd.DataFrame()
+
+        rw_holdings = workflow_ui.model_holding_symbols_for_run(rw_run_date)
+
+        rw_cols = st.columns([1.3, 1, 1, 1])
+        with rw_cols[0]:
+            if not rw_holdings.empty and "Symbol" in rw_holdings.columns:
+                holding_choices = sorted(
+                    rw_holdings["Symbol"].dropna().astype(str).unique()
+                )
+                preselect = 0
+                if "PRBLX" in holding_choices:
+                    preselect = holding_choices.index("PRBLX")
+                picked = st.selectbox(
+                    "Select current holding",
+                    options=holding_choices,
+                    index=preselect,
+                    key="mw_rw_picked",
+                )
+                manual = st.text_input(
+                    "…or type a ticker (overrides selection)",
+                    value="",
+                    key="mw_rw_manual",
+                )
+                rw_ticker = (manual or picked or "").strip().upper()
+            else:
+                st.caption(
+                    "No overlay scorecard found for this run — type a ticker "
+                    "directly to research."
+                )
+                manual = st.text_input(
+                    "Ticker to replace",
+                    value="PRBLX",
+                    key="mw_rw_manual_no_overlay",
+                )
+                rw_ticker = (manual or "").strip().upper()
+        with rw_cols[1]:
+            rw_top_n = st.number_input(
+                "Top-N candidates",
+                min_value=3, max_value=50, value=10, step=1,
+                key="mw_rw_top_n",
+            )
+        with rw_cols[2]:
+            rw_category = st.text_input(
+                "Category override (optional)",
+                value="",
+                key="mw_rw_category",
+            )
+        with rw_cols[3]:
+            rw_exclude_held = st.checkbox(
+                "Exclude already-held", value=False, key="mw_rw_exclude",
+            )
+
+        build_rw = st.button(
+            "Build Replacement Short List",
+            disabled=(not rw_ticker),
+            key="mw_btn_build_rw",
+            type="primary",
+        )
+        if build_rw and rw_ticker:
+            try:
+                with st.spinner(f"Researching replacements for {rw_ticker}…"):
+                    rw_bundle = workflow_ui.generate_replacement_workbench_for_run(
+                        run_date=rw_run_date,
+                        ticker=rw_ticker,
+                        category_override=(rw_category or None),
+                        top_n=int(rw_top_n),
+                        exclude_held=rw_exclude_held,
+                        persist=True,
+                    )
+                _ss["mw_rw_last_ticker"] = rw_ticker
+                _ss["mw_rw_last_run_date"] = rw_run_date
+                resolved = rw_bundle["summary"]["resolved_ticker"]
+                alias_note = ""
+                if rw_bundle["summary"].get("alias_applied"):
+                    alias_note = f" (resolved to `{resolved}` via alias)"
+                st.success(
+                    f"Workbench for {rw_ticker}{alias_note} "
+                    f"· {len(rw_bundle['candidates'])} candidate(s) · "
+                    f"saved under `{rw_bundle['path']}`"
+                )
+            except Exception as exc:
+                st.error(f"Workbench build failed: {exc}")
+
+        show_ticker = _ss.get("mw_rw_last_ticker") or rw_ticker
+        show_run = _ss.get("mw_rw_last_run_date") or rw_run_date
+        if show_ticker and show_run:
+            loaded_rw = workflow_ui.load_replacement_for_run(show_run, show_ticker)
+            if loaded_rw is not None:
+                summary = loaded_rw.get("summary", {}) or {}
+                st.markdown(
+                    f"**Workbench for {summary.get('ticker', show_ticker)}** "
+                    f"— category `{summary.get('category') or 'unknown'}` "
+                    f"({summary.get('category_source', '—')}) · "
+                    f"{summary.get('candidate_count', 0)} candidate(s)"
+                )
+                if summary.get("alias_applied"):
+                    st.info(
+                        f"Share-class alias applied: "
+                        f"`{summary.get('ticker')}` → "
+                        f"`{summary.get('resolved_ticker')}`."
+                    )
+                tab_prof, tab_cand, tab_brief = st.tabs(
+                    ["Current Holding Profile", "Top Candidates", "Brief"]
+                )
+                with tab_prof:
+                    st.dataframe(
+                        loaded_rw.get("current_profile", pd.DataFrame()),
+                        use_container_width=True, hide_index=True,
+                    )
+                with tab_cand:
+                    st.dataframe(
+                        loaded_rw.get("candidates", pd.DataFrame()),
+                        use_container_width=True, hide_index=True,
+                    )
+                with tab_brief:
+                    st.markdown(loaded_rw.get("brief_markdown", ""))
+
     # ---- Step 5: Archive list + comparison ----
     st.markdown("### 5 · Archived Runs & Comparison")
     runs_available = workflow_ui.available_runs()
