@@ -411,6 +411,11 @@ def generate_replacement_workbench_for_run(
     exclude_held: bool = False,
     persist: bool = True,
     alias_csv_path: Optional[str] = None,
+    model_holdings: Optional[pd.DataFrame] = None,
+    model_exposures: Optional[pd.DataFrame] = None,
+    benchmark_exposures: Optional[pd.DataFrame] = None,
+    benchmark_weights: Optional[Dict[str, float]] = None,
+    candidate_exposures: Optional[pd.DataFrame] = None,
 ) -> Dict[str, Any]:
     """Build + (optionally) persist a replacement short list for one ticker.
 
@@ -435,6 +440,11 @@ def generate_replacement_workbench_for_run(
         exclude_held=exclude_held,
         alias_map=alias_map,
         run_date=run_date,
+        model_holdings=model_holdings,
+        model_exposures=model_exposures,
+        benchmark_exposures=benchmark_exposures,
+        benchmark_weights=benchmark_weights,
+        candidate_exposures=candidate_exposures,
     )
 
     out_dir = workbench_dir(runs_dir, run_date, ticker)

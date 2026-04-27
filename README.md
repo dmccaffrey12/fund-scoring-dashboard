@@ -444,7 +444,35 @@ streamlit/runs/<run-date>/replacement_workbench/<TICKER>/
     current_holding_profile.csv    # one row describing the current holding
     replacement_summary.json       # provenance (category source, counts, etc.)
     replacement_brief.md           # human-readable Markdown brief
+    # Optional benchmark-fit artifacts (only when exposure files are supplied)
+    benchmark_fit_candidates.csv          # candidates ranked by drift
+    current_vs_benchmark_exposure.csv     # per-bucket model vs benchmark
+    replacement_exposure_delta.csv        # exposures after top fit replacement
 ```
+
+### Benchmark fit / portfolio alignment (optional)
+
+When the user uploads three YCharts exposure exports (model holdings,
+benchmark constituents, candidate ideas) plus the holdings library, the
+workbench layers a **portfolio-alignment** view on top of FundScore:
+
+- Treats the **100/0 equity model** as the canonical equity sleeve
+  (lower-risk models are scaled versions of it, so we maintain one set
+  of equity targets, not one per risk model).
+- Compares the model's weighted stylebox + sector exposures to a
+  static 100/0 equity benchmark. Default weights: **SPYM 58%,
+  EFA 24%, SPMD 6%, SPSM 6%, EEM 6%** (editable in the UI / in
+  `benchmark_fit.DEFAULT_BENCHMARK_WEIGHTS`).
+- Simulates replacing the target ticker at its 100/0 weight with each
+  candidate, computing total absolute drift and max bucket drift before
+  and after, plus a **Strong Fit / Acceptable / Drift Risk** label.
+- Surfaces three picks in `replacement_summary.json`:
+  `best_fundscore_candidate`, `best_benchmark_fit_candidate`, and
+  `balanced_candidate` (combined Consensus_Rank + Fit_Rank). The
+  dual-lens (2023 / 2025 / Consensus) ranking is preserved alongside.
+
+See `streamlit/README.md` for the expected exposure-export column list,
+fit thresholds, and how drift math is computed.
 
 ### Library
 

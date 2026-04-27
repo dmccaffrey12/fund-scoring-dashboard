@@ -69,6 +69,12 @@ CURRENT_PROFILE_NAME = "current_holding_profile.csv"
 SUMMARY_NAME = "replacement_summary.json"
 BRIEF_NAME = "replacement_brief.md"
 
+# Benchmark-fit artifact filenames. Written only when the caller supplies
+# exposure data; absent files mean "fit layer not run for this ticker".
+BENCHMARK_FIT_CANDIDATES_NAME = "benchmark_fit_candidates.csv"
+CURRENT_VS_BENCHMARK_NAME = "current_vs_benchmark_exposure.csv"
+REPLACEMENT_DELTA_NAME = "replacement_exposure_delta.csv"
+
 DEFAULT_TOP_N = 10
 
 CANDIDATE_COLUMNS: List[str] = [
@@ -137,6 +143,9 @@ class ReplacementResult:
     summary: Dict[str, Any]
     brief_markdown: str
     held_symbols: List[str] = field(default_factory=list)
+    benchmark_fit_candidates: pd.DataFrame = field(default_factory=pd.DataFrame)
+    current_vs_benchmark: pd.DataFrame = field(default_factory=pd.DataFrame)
+    replacement_delta: pd.DataFrame = field(default_factory=pd.DataFrame)
 
 
 # ---------------------------------------------------------------------------
@@ -519,6 +528,33 @@ def _render_brief(
             )
     lines.append("")
 
+    if summary.get("benchmark_fit_enabled"):
+        lines.append("## Benchmark fit")
+        lines.append(
+            f"- **Current sleeve fit:** {summary.get('baseline_fit_label', '—')} "
+            f"(total active drift "
+            f"{_format_float(summary.get('baseline_total_abs_drift'), 3)}, "
+            f"max bucket "
+            f"`{summary.get('baseline_max_drift_bucket') or '—'}` "
+            f"@ {_format_float(summary.get('baseline_max_abs_drift'), 3)})"
+        )
+        bw = summary.get("benchmark_weights") or {}
+        if bw:
+            wstr = ", ".join(f"{k} {v:.0%}" for k, v in bw.items())
+            lines.append(f"- **Benchmark weights:** {wstr}")
+        bf = summary.get("best_fundscore_candidate") or "—"
+        bfit = summary.get("best_benchmark_fit_candidate") or "—"
+        bal = summary.get("balanced_candidate") or "—"
+        lines.append(f"- **Best by FundScore:** `{bf}`")
+        lines.append(f"- **Best by benchmark fit:** `{bfit}`")
+        lines.append(f"- **Balanced (FundScore + fit):** `{bal}`")
+        lines.append(
+            "- Drift math: active = current model − benchmark, summed by "
+            "stylebox + sector buckets. Lower total/max drift is closer to "
+            "the static 100/0 equity benchmark."
+        )
+        lines.append("")
+
     lines.append("## Notes")
     lines.append(
         "- This is a short list for replacement research, not an "
@@ -547,6 +583,11 @@ def build_replacement_workbench(
     exclude_held: bool = False,
     alias_map: Optional[Mapping[str, str]] = None,
     run_date: Optional[str] = None,
+    model_holdings: Optional[pd.DataFrame] = None,
+    model_exposures: Optional[pd.DataFrame] = None,
+    benchmark_exposures: Optional[pd.DataFrame] = None,
+    benchmark_weights: Optional[Mapping[str, float]] = None,
+    candidate_exposures: Optional[pd.DataFrame] = None,
 ) -> ReplacementResult:
     """Build replacement short list artifacts for a single ticker.
 
@@ -658,6 +699,145 @@ def build_replacement_workbench(
         "generated_at": dt.datetime.now(dt.timezone.utc).isoformat(),
     }
 
+    # Benchmark-fit layer (optional). Adds drift columns to candidates and
+    # produces the three exposure artifacts when all four exposure inputs
+    # are present.
+    fit_candidates_table = pd.DataFrame()
+    current_vs_benchmark = pd.DataFrame()
+    replacement_delta = pd.DataFrame()
+    if (
+        model_holdings is not None
+        and model_exposures is not None
+        and benchmark_exposures is not None
+        and benchmark_weights is not None
+    ):
+        from benchmark_fit import (
+            DEFAULT_BENCHMARK_WEIGHTS,
+            build_benchmark_fit_artifacts,
+        )
+
+        bench_w = dict(benchmark_weights) if benchmark_weights \
+            else dict(DEFAULT_BENCHMARK_WEIGHTS)
+
+        # If the caller supplied no candidate exposure file, fall back to
+        # whatever's present in candidate / model exposures so we still
+        # have a chance of computing fit for ranked candidates.
+        cand_exp = candidate_exposures
+        if cand_exp is None or cand_exp.empty:
+            cand_exp = model_exposures
+
+        # Rank by drift across the union of candidate-file symbols and the
+        # FundScore short list — so the benchmark-fit list can surface
+        # exposure-file ideas (AVLC, VGIAX, ...) that may not be in the
+        # FundScore ranking, and the FundScore short list can still get
+        # drift columns when their exposures are available.
+        cand_syms_set: set = set()
+        if not candidates.empty:
+            cand_syms_set.update(
+                candidates["Symbol"].astype(str).str.strip().str.upper().tolist()
+            )
+        if cand_exp is not None and not cand_exp.empty \
+                and "Symbol" in cand_exp.columns:
+            cand_syms_set.update(
+                cand_exp["Symbol"].astype(str).str.strip().str.upper().tolist()
+            )
+        cand_syms = sorted(s for s in cand_syms_set if s)
+
+        # Holdings + exposure files use the committee-facing ticker
+        # (e.g. PRBLX), while ``resolved`` is the scored alias target
+        # (e.g. PRILX). Use the original for the holdings lookup so the
+        # simulation finds the row to replace; fall back to the resolved
+        # form if the original isn't present.
+        holdings_syms_upper = (
+            model_holdings["Symbol"].astype(str).str.strip().str.upper().tolist()
+            if "Symbol" in model_holdings.columns else []
+        )
+        target_for_sim = original if original in holdings_syms_upper else resolved
+
+        fit = build_benchmark_fit_artifacts(
+            model_holdings=model_holdings,
+            model_exposures=model_exposures,
+            benchmark_exposures=benchmark_exposures,
+            benchmark_weights=bench_w,
+            candidate_exposures=cand_exp,
+            target_symbol=target_for_sim,
+            candidate_symbols=cand_syms,
+        )
+
+        current_vs_benchmark = fit["current_vs_benchmark"]
+        fit_candidates_table = fit["replacement_table"]
+        replacement_delta = fit["replacement_delta"]
+
+        if not fit_candidates_table.empty and not candidates.empty:
+            cand_lower = candidates.copy()
+            cand_lower["Symbol_U"] = (
+                cand_lower["Symbol"].astype(str).str.strip().str.upper()
+            )
+            fit_lower = fit_candidates_table.copy()
+            fit_lower["Symbol_U"] = (
+                fit_lower["Candidate_Symbol"].astype(str).str.strip().str.upper()
+            )
+            keep = [
+                "Symbol_U",
+                "Total_Abs_Drift_After",
+                "Total_Abs_Drift_Change",
+                "Max_Abs_Drift_After",
+                "Stylebox_Drift_After",
+                "Sector_Drift_After",
+                "Fit_Label",
+                "Fit_Rank",
+            ]
+            cand_lower = cand_lower.merge(
+                fit_lower[keep], on="Symbol_U", how="left",
+            )
+            cand_lower = cand_lower.drop(columns=["Symbol_U"])
+            candidates = cand_lower
+
+        # Summary entries: best by FundScore vs best by benchmark-fit vs
+        # balanced compromise.
+        best_fundscore = (
+            str(candidates.iloc[0]["Symbol"]) if not candidates.empty else None
+        )
+        best_fit = None
+        if not fit_candidates_table.empty:
+            best_fit = str(fit_candidates_table.iloc[0]["Candidate_Symbol"])
+
+        balanced = None
+        if not candidates.empty and "Fit_Rank" in candidates.columns:
+            cand_with_fit = candidates.dropna(subset=["Fit_Rank"]).copy()
+            if not cand_with_fit.empty and "Consensus_Rank" in cand_with_fit.columns:
+                cand_with_fit["_combined"] = (
+                    cand_with_fit["Consensus_Rank"].rank(method="min")
+                    + cand_with_fit["Fit_Rank"].rank(method="min")
+                )
+                cand_with_fit = cand_with_fit.sort_values(
+                    ["_combined", "Symbol"], kind="stable",
+                )
+                balanced = str(cand_with_fit.iloc[0]["Symbol"])
+
+        summary["benchmark_fit_enabled"] = True
+        summary["benchmark_weights"] = {
+            k: float(v) for k, v in bench_w.items()
+        }
+        summary["baseline_fit_label"] = fit["baseline_fit_label"]
+        summary["baseline_total_abs_drift"] = float(
+            fit["baseline_metrics"]["total_abs_drift"]
+        )
+        summary["baseline_max_abs_drift"] = float(
+            fit["baseline_metrics"]["max_abs_drift"]
+        )
+        summary["baseline_max_drift_bucket"] = (
+            fit["baseline_metrics"]["max_drift_bucket"]
+        )
+        summary["best_fundscore_candidate"] = best_fundscore
+        summary["best_benchmark_fit_candidate"] = best_fit
+        summary["balanced_candidate"] = balanced
+        summary["benchmark_fit_candidate_count"] = int(len(fit_candidates_table))
+        summary["missing_holdings_exposures"] = list(fit["missing_holdings"])
+        summary["missing_benchmark_exposures"] = list(fit["missing_benchmark"])
+    else:
+        summary["benchmark_fit_enabled"] = False
+
     brief = _render_brief(
         ticker=original,
         resolved_ticker=resolved,
@@ -680,6 +860,9 @@ def build_replacement_workbench(
         summary=summary,
         brief_markdown=brief,
         held_symbols=held_symbols,
+        benchmark_fit_candidates=fit_candidates_table,
+        current_vs_benchmark=current_vs_benchmark,
+        replacement_delta=replacement_delta,
     )
 
 
@@ -695,7 +878,11 @@ def workbench_dir(runs_dir: str, run_date: str, ticker: str) -> str:
 
 
 def write_replacement(result: ReplacementResult, out_dir: str) -> Dict[str, str]:
-    """Persist the four canonical artifacts. Returns {name: path}."""
+    """Persist the canonical artifacts. Returns {name: path}.
+
+    The benchmark-fit artifacts are written only when the corresponding
+    DataFrames are non-empty — i.e., when the caller supplied exposure data.
+    """
     os.makedirs(out_dir, exist_ok=True)
     paths: Dict[str, str] = {}
 
@@ -716,6 +903,19 @@ def write_replacement(result: ReplacementResult, out_dir: str) -> Dict[str, str]
     with open(brief_path, "w") as f:
         f.write(result.brief_markdown)
     paths["brief"] = brief_path
+
+    if not result.benchmark_fit_candidates.empty:
+        bf_path = os.path.join(out_dir, BENCHMARK_FIT_CANDIDATES_NAME)
+        result.benchmark_fit_candidates.to_csv(bf_path, index=False)
+        paths["benchmark_fit_candidates"] = bf_path
+    if not result.current_vs_benchmark.empty:
+        cb_path = os.path.join(out_dir, CURRENT_VS_BENCHMARK_NAME)
+        result.current_vs_benchmark.to_csv(cb_path, index=False)
+        paths["current_vs_benchmark"] = cb_path
+    if not result.replacement_delta.empty:
+        rd_path = os.path.join(out_dir, REPLACEMENT_DELTA_NAME)
+        result.replacement_delta.to_csv(rd_path, index=False)
+        paths["replacement_delta"] = rd_path
 
     return paths
 
@@ -758,6 +958,9 @@ def load_replacement(out_dir: str) -> Optional[Dict[str, Any]]:
         "current_profile": _safe_read_csv(CURRENT_PROFILE_NAME),
         "summary": summary,
         "brief_markdown": brief,
+        "benchmark_fit_candidates": _safe_read_csv(BENCHMARK_FIT_CANDIDATES_NAME),
+        "current_vs_benchmark": _safe_read_csv(CURRENT_VS_BENCHMARK_NAME),
+        "replacement_delta": _safe_read_csv(REPLACEMENT_DELTA_NAME),
     }
 
 
@@ -776,6 +979,11 @@ def run_replacement_for_run(
     exclude_held: bool = False,
     persist: bool = True,
     alias_csv_path: Optional[str] = None,
+    model_holdings: Optional[pd.DataFrame] = None,
+    model_exposures: Optional[pd.DataFrame] = None,
+    benchmark_exposures: Optional[pd.DataFrame] = None,
+    benchmark_weights: Optional[Mapping[str, float]] = None,
+    candidate_exposures: Optional[pd.DataFrame] = None,
 ) -> Dict[str, Any]:
     """Build + (optionally) persist a workbench for ``ticker`` against the
     archived run at ``run_date``.
@@ -808,6 +1016,11 @@ def run_replacement_for_run(
         exclude_held=exclude_held,
         alias_map=alias_map,
         run_date=run_date,
+        model_holdings=model_holdings,
+        model_exposures=model_exposures,
+        benchmark_exposures=benchmark_exposures,
+        benchmark_weights=benchmark_weights,
+        candidate_exposures=candidate_exposures,
     )
 
     paths: Dict[str, str] = {}

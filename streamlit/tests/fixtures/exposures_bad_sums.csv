@@ -1,0 +1,5 @@
+Symbol,Name,Equity Stylebox Large Cap Value Exposure,Equity Stylebox Large Cap Blend Exposure,Equity Stylebox Large Cap Growth Exposure,Equity Stylebox Mid Cap Value Exposure,Equity Stylebox Mid Cap Blend Exposure,Equity Stylebox Mid Cap Growth Exposure,Equity Stylebox Small Cap Value Exposure,Equity Stylebox Small Cap Blend Exposure,Equity Stylebox Small Cap Growth Exposure,Basic Materials Exposure,Consumer Cyclical Exposure,Financial Services Exposure,Real Estate Exposure,Communication Services Exposure,Energy Exposure,Industrials Exposure,Technology Exposure,Consumer Defensive Exposure,Healthcare Exposure,Utilities Exposure
+GOOD,Good Fund,0.20,0.40,0.20,0.05,0.05,0.05,0.02,0.02,0.01,0.05,0.10,0.15,0.02,0.10,0.04,0.10,0.30,0.05,0.07,0.02
+LOWSUM,Low Sum Fund,0.10,0.10,0.05,0.05,0.05,0.05,0.02,0.02,0.01,0.05,0.10,0.15,0.02,0.10,0.04,0.10,0.30,0.05,0.07,0.02
+GOOD,Good Fund Duplicate,0.20,0.40,0.20,0.05,0.05,0.05,0.02,0.02,0.01,0.05,0.10,0.15,0.02,0.10,0.04,0.10,0.30,0.05,0.07,0.02
+,Blank Symbol Fund,0.20,0.40,0.20,0.05,0.05,0.05,0.02,0.02,0.01,0.05,0.10,0.15,0.02,0.10,0.04,0.10,0.30,0.05,0.07,0.02

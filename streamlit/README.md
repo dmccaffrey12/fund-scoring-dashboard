@@ -240,3 +240,135 @@ python tests/test_dual_score_table.py
 # or
 pytest tests/test_dual_score_table.py
 ```
+
+## Benchmark Fit / Portfolio Alignment
+
+The Replacement Workbench can rank candidates by **drift vs a static
+100/0 equity benchmark** in addition to FundScore. This answers the
+question *"which replacement improves the lineup while preserving or
+improving sector / stylebox alignment?"*.
+
+### 100/0 equity sleeve as the base
+
+The investment team treats the 100/0 model as the canonical equity
+sleeve. Lower-risk models (90/10, 80/20, etc.) are scaled versions of
+the same sleeve, so we maintain **one** set of equity-side benchmark
+targets, not one per risk model. All drift math is computed against
+that single sleeve.
+
+### Default benchmark weights
+
+| Symbol | Weight | Role |
+|--------|--------|------|
+| `SPYM` | 58%   | US large-cap core |
+| `EFA`  | 24%   | Developed ex-US |
+| `SPMD` | 6%    | US mid-cap |
+| `SPSM` | 6%    | US small-cap |
+| `EEM`  | 6%    | Emerging markets |
+
+Defined in `streamlit/benchmark_fit.py` as `DEFAULT_BENCHMARK_WEIGHTS`
+and editable in the Streamlit UI textarea (one `SYMBOL=weight` per
+line). The weights should sum to ~1.00; the UI warns if they do not.
+
+### Expected YCharts exposure export format
+
+Wide CSV with one row per symbol and the following columns:
+
+```
+Symbol, Name,
+Equity Stylebox Large Cap Value Exposure,
+Equity Stylebox Large Cap Blend Exposure,
+Equity Stylebox Large Cap Growth Exposure,
+Equity Stylebox Mid Cap Value Exposure,
+Equity Stylebox Mid Cap Blend Exposure,
+Equity Stylebox Mid Cap Growth Exposure,
+Equity Stylebox Small Cap Value Exposure,
+Equity Stylebox Small Cap Blend Exposure,
+Equity Stylebox Small Cap Growth Exposure,
+Basic Materials Exposure, Consumer Cyclical Exposure,
+Financial Services Exposure, Real Estate Exposure,
+Communication Services Exposure, Energy Exposure,
+Industrials Exposure, Technology Exposure,
+Consumer Defensive Exposure, Healthcare Exposure,
+Utilities Exposure
+```
+
+Values are decimals (0.20 = 20%). Each block (stylebox or sector) is
+expected to sum to ~1.00 per fund; `exposure_intake.validate_exposures`
+emits warnings when sums fall outside the configurable tolerance
+(default ±0.05) and errors on missing / blank / duplicate symbols.
+
+### Three uploads in Step 4c
+
+1. **Model holdings exposures** — exposures for every ticker the 100/0
+   model holds today.
+2. **Benchmark constituents exposures** — exposures for the five
+   benchmark ETFs above (or whichever weights you configure).
+3. **Candidate ideas exposures** — exposures for the same-category
+   candidate universe you are willing to consider.
+
+A fourth optional upload is the **model holdings library** (CSV with
+`Model_Name, Symbol, Target_Weight, Sleeve`) — without it the workbench
+falls back to the repo-root `model_holdings_master_library_converted.csv`.
+Only the `100/0` model rows are used for drift math.
+
+### Drift metrics
+
+For each stylebox and sector bucket *b*:
+
+```
+active[b] = weighted_actual[b] - weighted_benchmark[b]
+```
+
+Aggregates:
+
+- `total_abs_drift` — sum of |active[b]| across all 20 buckets.
+- `max_abs_drift` / `max_drift_bucket` — the single largest deviation.
+- `stylebox_total_abs_drift` / `sector_total_abs_drift` — the same
+  total split across the two axes.
+
+Fit labels (tunable in `benchmark_fit.py`):
+
+| Label | Total drift | Max bucket drift |
+|-------|-------------|------------------|
+| Strong Fit | ≤ 0.20 | ≤ 0.06 |
+| Acceptable | ≤ 0.40 | ≤ 0.10 |
+| Drift Risk | otherwise | otherwise |
+
+### Replacement simulation
+
+For a target ticker T at its model weight wT, simulate replacing T with
+each candidate C by computing:
+
+```
+actual_after[b] = actual_before[b] - wT * exposure_T[b] + wT * exposure_C[b]
+```
+
+and re-running the drift math against the same benchmark. Candidates
+are ranked ascending by `Total_Abs_Drift_After` (best fit first).
+
+### Artifacts produced
+
+Under `runs/<run-date>/replacement_workbench/<TICKER>/`:
+
+- `replacement_candidates.csv` — same-category candidates with the dual
+  2023 / 2025 score lens, plus (when fit layer ran) drift columns and
+  the `Fit_Label` / `Fit_Rank`.
+- `current_holding_profile.csv` — one-row profile for the current
+  holding.
+- `replacement_summary.json` — adds `baseline_fit_label`,
+  `baseline_total_abs_drift`, `best_fundscore_candidate`,
+  `best_benchmark_fit_candidate`, `balanced_candidate`, and the
+  benchmark weights actually used.
+- `replacement_brief.md` — committee-readable Markdown brief.
+- `benchmark_fit_candidates.csv` *(only when fit layer runs)* — the
+  full benchmark-fit ranking.
+- `current_vs_benchmark_exposure.csv` *(only when fit layer runs)* —
+  long-form per-bucket model vs benchmark exposures + active drift.
+- `replacement_exposure_delta.csv` *(only when fit layer runs)* —
+  per-bucket exposures after the **top benchmark-fit replacement**.
+
+The dual-lens (2023 / 2025 / Consensus) ranking is **never** blended
+away by the fit layer. The summary surfaces three picks side-by-side
+(best by FundScore, best by fit, best balanced) so the committee can
+weigh them.
