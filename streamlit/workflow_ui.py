@@ -416,6 +416,9 @@ def generate_replacement_workbench_for_run(
     benchmark_exposures: Optional[pd.DataFrame] = None,
     benchmark_weights: Optional[Dict[str, float]] = None,
     candidate_exposures: Optional[pd.DataFrame] = None,
+    candidate_universe_mode: str = "auto",
+    restrict_to_candidate_exposures: Optional[bool] = None,
+    exclude_already_held: Optional[bool] = None,
 ) -> Dict[str, Any]:
     """Build + (optionally) persist a replacement short list for one ticker.
 
@@ -445,6 +448,9 @@ def generate_replacement_workbench_for_run(
         benchmark_exposures=benchmark_exposures,
         benchmark_weights=benchmark_weights,
         candidate_exposures=candidate_exposures,
+        candidate_universe_mode=candidate_universe_mode,
+        restrict_to_candidate_exposures=restrict_to_candidate_exposures,
+        exclude_already_held=exclude_already_held,
     )
 
     out_dir = workbench_dir(runs_dir, run_date, ticker)

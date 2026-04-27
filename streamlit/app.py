@@ -2479,6 +2479,18 @@ elif page == "Monthly Workflow":
                 "apply to every risk-tier model (lower-risk models are "
                 "scaled versions of the same equity sleeve)."
             )
+            st.caption(
+                "**Candidate ideas exposures** is treated as the **curated "
+                "replacement universe**: when supplied, the staff-facing "
+                "Top Candidates and Benchmark-Fit ranking are restricted "
+                "to those tickers (e.g. only the active mutual funds / "
+                "ETFs you screened upstream). **Already-held model "
+                "positions are excluded by default** so passive sleeve "
+                "names (e.g. SPYM in the 100/0 model) cannot be "
+                "recommended as a replacement for an active holding "
+                "that sits alongside them. Display names are taken "
+                "from the candidate file when present."
+            )
             ex_cols = st.columns(3)
             with ex_cols[0]:
                 model_exp_file = st.file_uploader(
@@ -2540,6 +2552,36 @@ elif page == "Monthly Workflow":
                 st.warning(
                     f"Benchmark weights sum to {total_w:.3f} — expected ~1.00."
                 )
+
+            st.markdown("**Curated-universe behavior**")
+            uni_mode = st.radio(
+                "Candidate universe",
+                options=["auto", "uploaded", "scored"],
+                index=0,
+                horizontal=True,
+                key="mw_rw_uni_mode",
+                help=(
+                    "auto: restrict to the uploaded candidate file when one "
+                    "is provided, else fall back to the scored universe. "
+                    "uploaded: always restrict to the uploaded candidate "
+                    "file (curated active-replacement universe). "
+                    "scored: ignore the curated file and rank against the "
+                    "full scored universe (legacy behavior)."
+                ),
+            )
+            include_held = st.checkbox(
+                "Include already-held names in candidate list",
+                value=False,
+                key="mw_rw_include_held",
+                help=(
+                    "By default already-held model positions (e.g. SPYM "
+                    "in the 100/0 model) are excluded from staff-facing "
+                    "replacement recommendations — only the holding being "
+                    "replaced is allowed. Toggle this on for diagnostic "
+                    "review or when intentionally double-checking passive "
+                    "exposures."
+                ),
+            )
 
             # Parse + validate any uploaded exposures.
             rw_model_exp = None
@@ -2651,6 +2693,8 @@ elif page == "Monthly Workflow":
                         benchmark_exposures=rw_bench_exp if rw_fit_ready else None,
                         benchmark_weights=rw_bench_weights if rw_fit_ready else None,
                         candidate_exposures=rw_cand_exp,
+                        candidate_universe_mode=uni_mode,
+                        exclude_already_held=(False if include_held else None),
                     )
                 _ss["mw_rw_last_ticker"] = rw_ticker
                 _ss["mw_rw_last_run_date"] = rw_run_date
@@ -2683,6 +2727,27 @@ elif page == "Monthly Workflow":
                         f"Share-class alias applied: "
                         f"`{summary.get('ticker')}` → "
                         f"`{summary.get('resolved_ticker')}`."
+                    )
+                if summary.get("restrict_to_candidate_exposures"):
+                    st.caption(
+                        "Candidate universe: **uploaded** "
+                        f"({summary.get('candidate_universe_size') or 0} "
+                        "curated symbol(s)). "
+                        + (
+                            "Already-held model positions excluded."
+                            if summary.get("exclude_already_held")
+                            else "Already-held model positions retained."
+                        )
+                    )
+                else:
+                    st.caption(
+                        "Candidate universe: **full scored universe** in "
+                        "the same category. "
+                        + (
+                            "Already-held model positions excluded."
+                            if summary.get("exclude_already_held")
+                            else "Already-held model positions flagged but kept."
+                        )
                     )
                 fit_enabled = bool(summary.get("benchmark_fit_enabled"))
                 if fit_enabled:
