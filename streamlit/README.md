@@ -372,3 +372,26 @@ The dual-lens (2023 / 2025 / Consensus) ranking is **never** blended
 away by the fit layer. The summary surfaces three picks side-by-side
 (best by FundScore, best by fit, best balanced) so the committee can
 weigh them.
+
+### Printable brief & Streamlit Cloud downloads
+
+`printable_brief.py` renders a self-contained HTML brief for one
+replacement decision (no Quarto / pandoc required) and powers the
+**Downloads** row beneath the workbench tabs. Streamlit Cloud's run
+directory is ephemeral and not user-accessible, so the page exposes
+`st.download_button` controls for:
+
+- the printable HTML brief (browser-print → PDF for paper or committee
+  packet),
+- the Markdown brief,
+- each non-empty CSV (candidates, benchmark-fit candidates,
+  current-vs-benchmark exposures, replacement-exposure delta), and
+- a one-click ZIP bundle of every available artifact.
+
+The brief itself includes the current-holding summary, methodology,
+top FundScore candidates, benchmark-fit candidates (when present),
+headline picks (best FundScore / best fit / balanced), drift summary,
+and a data-quality block that explicitly notes the ephemeral storage
+caveat. Save the downloads locally — the server-side path under
+`runs/<date>/replacement_workbench/<TICKER>/` is recreated on every
+Streamlit Cloud redeploy and should not be treated as durable storage.

@@ -2704,8 +2704,11 @@ elif page == "Monthly Workflow":
                     alias_note = f" (resolved to `{resolved}` via alias)"
                 st.success(
                     f"Workbench for {rw_ticker}{alias_note} "
-                    f"· {len(rw_bundle['candidates'])} candidate(s) · "
-                    f"saved under `{rw_bundle['path']}`"
+                    f"· {len(rw_bundle['candidates'])} candidate(s) ready. "
+                    "Use the **Download** controls below to save the printable "
+                    "brief and CSV artifacts — the server path "
+                    f"`{rw_bundle['path']}` is not user-accessible on "
+                    "Streamlit Cloud and is wiped on redeploy."
                 )
             except Exception as exc:
                 st.error(f"Workbench build failed: {exc}")
@@ -2826,6 +2829,140 @@ elif page == "Monthly Workflow":
                             )
                 with tab_brief:
                     st.markdown(loaded_rw.get("brief_markdown", ""))
+
+                # --- Downloads (Streamlit Cloud-friendly artifact access) ---
+                from printable_brief import (
+                    build_artifact_zip as _build_artifact_zip,
+                    render_printable_brief_html as _render_printable_html,
+                )
+
+                st.markdown("#### Downloads")
+                st.caption(
+                    "Streamlit Cloud's run-archive directory is **ephemeral** "
+                    "and not user-accessible. Save these files locally for "
+                    "committee records — Quarto is **not** required for the "
+                    "printable brief (it is only needed for the full monthly "
+                    "packet)."
+                )
+                try:
+                    _printable_html = _render_printable_html(
+                        loaded_rw, run_date=show_run,
+                    )
+                except Exception as _exc:
+                    _printable_html = None
+                    st.error(f"Failed to render printable brief: {_exc}")
+
+                _dl_cols = st.columns(3)
+                _dl_idx = [0]
+
+                def _next_dl_col():
+                    col = _dl_cols[_dl_idx[0] % len(_dl_cols)]
+                    _dl_idx[0] += 1
+                    return col
+
+                _dl_ticker = (
+                    summary.get("ticker") or show_ticker or "REPLACEMENT"
+                )
+
+                if _printable_html:
+                    with _next_dl_col():
+                        st.download_button(
+                            "⬇︎ Printable brief (HTML)",
+                            data=_printable_html.encode("utf-8"),
+                            file_name=f"{_dl_ticker}_printable_brief.html",
+                            mime="text/html",
+                            help=(
+                                "Self-contained HTML — open and use the "
+                                "browser's Print → Save as PDF for the "
+                                "committee packet."
+                            ),
+                            key=f"mw_rw_dl_html_{show_run}_{_dl_ticker}",
+                        )
+
+                _md_brief = loaded_rw.get("brief_markdown") or ""
+                if _md_brief:
+                    with _next_dl_col():
+                        st.download_button(
+                            "⬇︎ Markdown brief",
+                            data=_md_brief.encode("utf-8"),
+                            file_name=f"{_dl_ticker}_replacement_brief.md",
+                            mime="text/markdown",
+                            key=f"mw_rw_dl_md_{show_run}_{_dl_ticker}",
+                        )
+
+                _cand_df = loaded_rw.get("candidates", pd.DataFrame())
+                if isinstance(_cand_df, pd.DataFrame) and not _cand_df.empty:
+                    with _next_dl_col():
+                        st.download_button(
+                            "⬇︎ Candidates (CSV)",
+                            data=_cand_df.to_csv(index=False).encode("utf-8"),
+                            file_name=(
+                                f"{_dl_ticker}_replacement_candidates.csv"
+                            ),
+                            mime="text/csv",
+                            key=f"mw_rw_dl_cand_{show_run}_{_dl_ticker}",
+                        )
+
+                _fit_df = loaded_rw.get(
+                    "benchmark_fit_candidates", pd.DataFrame(),
+                )
+                if isinstance(_fit_df, pd.DataFrame) and not _fit_df.empty:
+                    with _next_dl_col():
+                        st.download_button(
+                            "⬇︎ Benchmark-fit candidates (CSV)",
+                            data=_fit_df.to_csv(index=False).encode("utf-8"),
+                            file_name=(
+                                f"{_dl_ticker}_benchmark_fit_candidates.csv"
+                            ),
+                            mime="text/csv",
+                            key=f"mw_rw_dl_fit_{show_run}_{_dl_ticker}",
+                        )
+
+                _cb_df = loaded_rw.get("current_vs_benchmark", pd.DataFrame())
+                if isinstance(_cb_df, pd.DataFrame) and not _cb_df.empty:
+                    with _next_dl_col():
+                        st.download_button(
+                            "⬇︎ Current vs benchmark (CSV)",
+                            data=_cb_df.to_csv(index=False).encode("utf-8"),
+                            file_name=(
+                                f"{_dl_ticker}_current_vs_benchmark_exposure.csv"
+                            ),
+                            mime="text/csv",
+                            key=f"mw_rw_dl_cb_{show_run}_{_dl_ticker}",
+                        )
+
+                _rd_df = loaded_rw.get("replacement_delta", pd.DataFrame())
+                if isinstance(_rd_df, pd.DataFrame) and not _rd_df.empty:
+                    with _next_dl_col():
+                        st.download_button(
+                            "⬇︎ Replacement exposure delta (CSV)",
+                            data=_rd_df.to_csv(index=False).encode("utf-8"),
+                            file_name=(
+                                f"{_dl_ticker}_replacement_exposure_delta.csv"
+                            ),
+                            mime="text/csv",
+                            key=f"mw_rw_dl_rd_{show_run}_{_dl_ticker}",
+                        )
+
+                try:
+                    _zip_bytes = _build_artifact_zip(
+                        loaded_rw, html_brief=_printable_html,
+                    )
+                    with _next_dl_col():
+                        st.download_button(
+                            "⬇︎ All artifacts (ZIP)",
+                            data=_zip_bytes,
+                            file_name=f"{_dl_ticker}_replacement_workbench.zip",
+                            mime="application/zip",
+                            help=(
+                                "Bundles the printable HTML, markdown brief, "
+                                "summary JSON, and every non-empty CSV for "
+                                "this run."
+                            ),
+                            key=f"mw_rw_dl_zip_{show_run}_{_dl_ticker}",
+                        )
+                except Exception as _exc:
+                    st.warning(f"ZIP bundle unavailable: {_exc}")
 
     # ---- Step 5: Archive list + comparison ----
     st.markdown("### 5 · Archived Runs & Comparison")
