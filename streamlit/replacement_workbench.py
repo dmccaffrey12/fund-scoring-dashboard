@@ -96,17 +96,22 @@ CANDIDATE_COLUMNS: List[str] = [
     "Already_Held",
     "Held_By_Models",
     "From_Uploaded_Universe",
+    "From_Committee_List",
+    "Scored_In_Universe",
     "Reason_Label",
 ]
 
 
 # Candidate universe modes.
-#   "auto"     — restrict to uploaded candidate exposures when one is provided,
+#   "auto"     — restrict to the committee candidate list when supplied; else
+#                restrict to uploaded candidate exposures when one is provided;
 #                otherwise fall back to the full scored universe (legacy).
-#   "uploaded" — always restrict to the uploaded candidate exposure file.
-#                Ignored (with a warning) if no candidate_exposures supplied.
+#   "uploaded" — always restrict to the uploaded curated universe (committee
+#                candidate list preferred; falls back to candidate exposures).
+#                Ignored (with an empty short list) if neither file supplied.
 #   "scored"   — never restrict; rank against the full scored universe like
-#                the pre-fit-layer workbench did.
+#                the pre-fit-layer workbench did. This is "discovery mode"
+#                and is labelled as such in staff-facing artifacts.
 CANDIDATE_UNIVERSE_MODES = ("auto", "uploaded", "scored")
 
 PROFILE_COLUMNS: List[str] = [
@@ -350,6 +355,7 @@ def _rank_candidates(
     restrict_symbols: Optional[set] = None,
     annotation_universe: Optional[set] = None,
     name_overrides: Optional[Mapping[str, str]] = None,
+    committee_list_symbols: Optional[set] = None,
 ) -> pd.DataFrame:
     """Rank the same-category pool by Consensus_Rank (best first) and flag
     anything already held.
@@ -405,6 +411,7 @@ def _rank_candidates(
     already_held: List[bool] = []
     held_by: List[str] = []
     from_uploaded: List[bool] = []
+    from_committee: List[bool] = []
     annotate_set = annotation_universe if annotation_universe is not None \
         else restrict_symbols
     for sym in sym_upper_out:
@@ -414,9 +421,21 @@ def _rank_candidates(
         from_uploaded.append(
             bool(annotate_set is not None and sym in annotate_set)
         )
+        from_committee.append(
+            bool(committee_list_symbols is not None
+                 and sym in committee_list_symbols)
+        )
     p["Already_Held"] = already_held
     p["Held_By_Models"] = held_by
     p["From_Uploaded_Universe"] = from_uploaded
+    p["From_Committee_List"] = from_committee
+    # Rows that survive _candidate_pool came from the dual-score table, so
+    # they are by definition scored. The annotation is still useful so the
+    # printable brief can flag committee-list candidates that happen NOT to
+    # be in the scored universe (those are produced via the appended-rows
+    # path, see build_replacement_workbench).
+    if "Scored_In_Universe" not in p.columns:
+        p["Scored_In_Universe"] = True
 
     # Preserve curated names from the uploaded candidate file when supplied.
     if name_overrides:
@@ -523,7 +542,31 @@ def _render_brief(
         "- Filter: **same Morningstar category** "
         f"(`{category or 'unknown'}`)."
     )
-    if summary.get("restrict_to_candidate_exposures"):
+    cu_source = summary.get("candidate_universe_source")
+    if cu_source == "committee_list":
+        lines.append(
+            "- **Candidate universe:** uploaded **committee candidate "
+            "list** "
+            f"({summary.get('committee_list_size') or 0} symbol(s)). "
+            "This is the authoritative set of names under consideration "
+            "for replacing the current holding — the full scored universe "
+            "is **not** used for the staff-facing short list."
+        )
+        if summary.get("committee_list_excluded_held_symbols"):
+            held = summary["committee_list_excluded_held_symbols"]
+            lines.append(
+                "- **Held names excluded from the committee list:** "
+                f"{', '.join('`' + s + '`' for s in held)}. Toggle the "
+                "include-already-held override to keep them in the table."
+            )
+        if summary.get("committee_list_missing_from_scored_universe"):
+            missing = summary["committee_list_missing_from_scored_universe"]
+            lines.append(
+                "- **Committee-list names not in the scored universe** "
+                "(included as un-scored rows): "
+                f"{', '.join('`' + s + '`' for s in missing)}."
+            )
+    elif summary.get("restrict_to_candidate_exposures"):
         lines.append(
             "- **Candidate universe:** restricted to the uploaded curated "
             "candidate-exposures file "
@@ -534,7 +577,9 @@ def _render_brief(
     else:
         lines.append(
             "- **Candidate universe:** full scored universe in the same "
-            "category."
+            "category (**discovery mode** — upload a committee candidate "
+            "list above to scope this brief to the names actually under "
+            "consideration)."
         )
     lines.append(
         "- Rank by **Consensus_Rank** (average of 2023 and 2025 ranks), "
@@ -655,6 +700,7 @@ def build_replacement_workbench(
     benchmark_exposures: Optional[pd.DataFrame] = None,
     benchmark_weights: Optional[Mapping[str, float]] = None,
     candidate_exposures: Optional[pd.DataFrame] = None,
+    candidate_list: Optional[pd.DataFrame] = None,
     candidate_universe_mode: str = "auto",
     restrict_to_candidate_exposures: Optional[bool] = None,
     exclude_already_held: Optional[bool] = None,
@@ -691,12 +737,28 @@ def build_replacement_workbench(
     run_date:
         Optional ISO date string from the caller's run archive, recorded in
         the summary and brief for provenance.
+    candidate_list:
+        Optional DataFrame of the **committee candidate list** — the
+        actual names under consideration for replacing ``ticker`` (parsed
+        from a simple-schema CSV via ``candidate_list_intake``). When
+        supplied, this list is **authoritative** for the candidate
+        universe (FundScore short list + benchmark-fit ranking + brief),
+        overriding ``candidate_exposures``. Names from this list win for
+        staff-facing display.
+
+        Symbols in the list that are missing from the scored universe are
+        still included in the FundScore short list as un-scored rows so
+        the committee sees the same set the user uploaded — bench-fit
+        ranking only includes them if exposure data is also available.
     candidate_universe_mode:
         ``"auto"`` (default) restricts the FundScore short list and the
-        benchmark-fit ranking to the curated symbols in
-        ``candidate_exposures`` whenever that file is supplied. ``"uploaded"``
-        forces that restriction (warns if no candidate file). ``"scored"``
-        keeps the legacy behavior — rank against the full scored universe.
+        benchmark-fit ranking to the committee candidate list when
+        supplied; falls back to the symbols in ``candidate_exposures``
+        when only that is supplied; otherwise uses the full scored
+        universe (legacy "discovery" mode). ``"uploaded"`` forces a
+        curated-universe restriction (committee list preferred, then
+        candidate exposures); the short list is empty if neither is
+        supplied. ``"scored"`` keeps the discovery/legacy path.
     restrict_to_candidate_exposures:
         Explicit override for ``candidate_universe_mode``. ``True`` always
         restricts to the uploaded universe (no-op when no file supplied);
@@ -738,10 +800,40 @@ def build_replacement_workbench(
     held_lookup = _held_by_models(scorecard)
     held_symbols = _extract_held_symbols(scorecard)
 
-    # Build the curated candidate universe (symbols + display names) when
-    # the caller supplied a candidate_exposures file.
+    # Build the curated candidate universe (symbols + display names). The
+    # **committee candidate list** wins over ``candidate_exposures`` when
+    # both are supplied — the list is the user's authoritative statement
+    # of what staff should be considering.
     candidate_universe_symbols: Optional[set] = None
     candidate_name_overrides: Dict[str, str] = {}
+    committee_list_symbols: Optional[set] = None
+    committee_name_map: Dict[str, str] = {}
+
+    has_committee_list = (
+        candidate_list is not None
+        and isinstance(candidate_list, pd.DataFrame)
+        and not candidate_list.empty
+        and "Symbol" in candidate_list.columns
+    )
+    if has_committee_list:
+        sym_col = (
+            candidate_list["Symbol"].astype(str).str.strip().str.upper()
+        )
+        committee_list_symbols = {s for s in sym_col.tolist() if s}
+        # Pull display names: prefer Name, fall back to Fund_Name.
+        name_source = None
+        if "Name" in candidate_list.columns:
+            name_source = "Name"
+        elif "Fund_Name" in candidate_list.columns:
+            name_source = "Fund_Name"
+        if name_source is not None:
+            for s, n in zip(
+                sym_col.tolist(),
+                candidate_list[name_source].astype(str).tolist(),
+            ):
+                if s and n and n.strip() and n.strip().upper() != "NAN":
+                    committee_name_map[s] = n.strip()
+
     has_candidate_file = (
         candidate_exposures is not None and not candidate_exposures.empty
         and "Symbol" in candidate_exposures.columns
@@ -750,12 +842,26 @@ def build_replacement_workbench(
         sym_col = (
             candidate_exposures["Symbol"].astype(str).str.strip().str.upper()
         )
-        candidate_universe_symbols = {s for s in sym_col.tolist() if s}
+        # When no committee list supplied, candidate_exposures defines the
+        # universe (existing behavior). When both are supplied, the committee
+        # list defines the universe and exposures provides bench-fit data.
+        if not has_committee_list:
+            candidate_universe_symbols = {s for s in sym_col.tolist() if s}
         if "Name" in candidate_exposures.columns:
             for s, n in zip(sym_col.tolist(),
                              candidate_exposures["Name"].astype(str).tolist()):
                 if s and n and n.strip():
                     candidate_name_overrides[s] = n.strip()
+
+    # Committee-list names win over exposure-file names.
+    if committee_name_map:
+        candidate_name_overrides.update(committee_name_map)
+
+    # Promote the committee list to the authoritative universe.
+    if has_committee_list:
+        candidate_universe_symbols = set(committee_list_symbols or set())
+
+    has_curated_universe = bool(has_committee_list or has_candidate_file)
 
     # Resolve the universe-mode flags into a single boolean for the pool.
     if restrict_to_candidate_exposures is None:
@@ -764,11 +870,11 @@ def build_replacement_workbench(
         elif candidate_universe_mode == "scored":
             restrict_resolved = False
         else:  # "auto"
-            restrict_resolved = bool(has_candidate_file)
+            restrict_resolved = bool(has_curated_universe)
     else:
         restrict_resolved = bool(restrict_to_candidate_exposures)
 
-    if restrict_resolved and not has_candidate_file:
+    if restrict_resolved and not has_curated_universe:
         # Caller asked to restrict but supplied no curated universe — the
         # only honest response is "no candidates from the curated list".
         # Surface that via an empty candidate_universe_symbols set so
@@ -785,9 +891,12 @@ def build_replacement_workbench(
     )
 
     # Resolve exclude_already_held, defaulting True when a candidate file
-    # is present so SPYM (etc.) can't slip into the curated active list.
+    # or committee list is present so SPYM (etc.) can't slip into the
+    # curated active list.
     if exclude_already_held is None:
-        exclude_already_held_resolved = bool(has_candidate_file)
+        exclude_already_held_resolved = bool(
+            has_candidate_file or has_committee_list
+        )
     else:
         exclude_already_held_resolved = bool(exclude_already_held)
     # Legacy ``exclude_held`` still wins when explicitly truthy.
@@ -809,7 +918,63 @@ def build_replacement_workbench(
         restrict_symbols=pool_restrict_symbols,
         annotation_universe=candidate_universe_symbols,
         name_overrides=candidate_name_overrides,
+        committee_list_symbols=committee_list_symbols,
     )
+
+    # When a committee list was supplied, ensure every symbol in the list
+    # appears in the staff-facing candidate table — even if it's missing
+    # from the scored universe. Those rows are appended as un-scored
+    # entries so the committee sees the full set they uploaded.
+    excluded_held_in_committee_list: List[str] = []
+    missing_from_scored_committee_list: List[str] = []
+    if has_committee_list and committee_list_symbols:
+        already_in_table = set(
+            candidates["Symbol"].astype(str).str.upper().tolist()
+        )
+        held_excluded_set = (
+            {s for s in held_symbols if s not in {original, resolved}}
+            if exclude_already_held_resolved else set()
+        )
+        excluded_held_in_committee_list = sorted(
+            committee_list_symbols & held_excluded_set
+        )
+        missing_from_table: List[str] = []
+        for sym in committee_list_symbols:
+            if sym in already_in_table:
+                continue
+            if sym in {original, resolved}:
+                continue
+            if sym in held_excluded_set:
+                continue
+            missing_from_table.append(sym)
+        # Determinism: sort so identical inputs yield identical artifacts.
+        missing_from_table.sort()
+
+        appended_rows: List[Dict[str, Any]] = []
+        next_rank = (len(candidates) + 1) if not candidates.empty else 1
+        for sym in missing_from_table:
+            row: Dict[str, Any] = {col: np.nan for col in CANDIDATE_COLUMNS}
+            row["Rank"] = next_rank
+            next_rank += 1
+            row["Symbol"] = sym
+            row["Name"] = (
+                committee_name_map.get(sym)
+                or candidate_name_overrides.get(sym, "")
+            )
+            row["Already_Held"] = bool(held_lookup.get(sym))
+            row["Held_By_Models"] = ", ".join(held_lookup.get(sym, []))
+            row["From_Uploaded_Universe"] = (
+                candidate_universe_symbols is not None
+                and sym in candidate_universe_symbols
+            )
+            row["From_Committee_List"] = True
+            row["Scored_In_Universe"] = False
+            row["Reason_Label"] = "Committee list — not in scored universe"
+            appended_rows.append(row)
+        if appended_rows:
+            extra = pd.DataFrame(appended_rows, columns=CANDIDATE_COLUMNS)
+            candidates = pd.concat([candidates, extra], ignore_index=True)
+        missing_from_scored_committee_list = list(missing_from_table)
 
     profile = _current_holding_profile(
         dual_table,
@@ -855,9 +1020,26 @@ def build_replacement_workbench(
             if candidate_universe_symbols is not None else None
         ),
         "candidate_universe_source": (
-            "uploaded" if has_candidate_file and restrict_resolved
-            else ("scored" if not restrict_resolved else "uploaded_empty")
+            "committee_list" if has_committee_list and restrict_resolved
+            else (
+                "uploaded" if has_candidate_file and restrict_resolved
+                else (
+                    "scored" if not restrict_resolved
+                    else "uploaded_empty"
+                )
+            )
         ),
+        "committee_list_supplied": bool(has_committee_list),
+        "committee_list_size": (
+            int(len(committee_list_symbols))
+            if committee_list_symbols is not None else None
+        ),
+        "committee_list_excluded_held_symbols": list(
+            excluded_held_in_committee_list
+        ) if has_committee_list else [],
+        "committee_list_missing_from_scored_universe": list(
+            missing_from_scored_committee_list
+        ) if has_committee_list else [],
         "universe_row_count": int(len(dual_table)),
         "category_pool_size": int(len(pool)),
         "held_symbol_count": int(len(held_symbols)),
@@ -965,6 +1147,9 @@ def build_replacement_workbench(
             ).tolist()
             fit_candidates_table["From_Uploaded_Universe"] = (
                 sym_u.isin(candidate_universe_symbols or set()).tolist()
+            )
+            fit_candidates_table["From_Committee_List"] = (
+                sym_u.isin(committee_list_symbols or set()).tolist()
             )
             # Display name resolution: prefer curated Name from
             # candidate_exposures, else fall back to the scored universe.
@@ -1217,6 +1402,7 @@ def run_replacement_for_run(
     benchmark_exposures: Optional[pd.DataFrame] = None,
     benchmark_weights: Optional[Mapping[str, float]] = None,
     candidate_exposures: Optional[pd.DataFrame] = None,
+    candidate_list: Optional[pd.DataFrame] = None,
     candidate_universe_mode: str = "auto",
     restrict_to_candidate_exposures: Optional[bool] = None,
     exclude_already_held: Optional[bool] = None,
@@ -1257,6 +1443,7 @@ def run_replacement_for_run(
         benchmark_exposures=benchmark_exposures,
         benchmark_weights=benchmark_weights,
         candidate_exposures=candidate_exposures,
+        candidate_list=candidate_list,
         candidate_universe_mode=candidate_universe_mode,
         restrict_to_candidate_exposures=restrict_to_candidate_exposures,
         exclude_already_held=exclude_already_held,
@@ -1293,6 +1480,11 @@ def _cmd_build(args: argparse.Namespace) -> int:
         latest = load_latest_run(runs_dir=runs_dir)
         run_date = latest["run_date"]
 
+    candidate_list_df: Optional[pd.DataFrame] = None
+    if getattr(args, "candidate_list", None):
+        from candidate_list_intake import parse_candidate_list
+        candidate_list_df = parse_candidate_list(args.candidate_list)
+
     bundle = run_replacement_for_run(
         run_date=run_date,
         ticker=args.ticker,
@@ -1303,6 +1495,7 @@ def _cmd_build(args: argparse.Namespace) -> int:
         exclude_held=args.exclude_held,
         persist=not args.dry_run,
         alias_csv_path=args.alias_csv,
+        candidate_list=candidate_list_df,
         candidate_universe_mode=args.candidate_universe_mode,
         exclude_already_held=(
             False if args.include_already_held else None
@@ -1364,6 +1557,12 @@ def _cli() -> None:
     p_build.add_argument(
         "--exclude-held", action="store_true",
         help="Drop candidates already held by any model, rather than flagging.",
+    )
+    p_build.add_argument(
+        "--candidate-list", default=None,
+        help="Optional CSV of the committee candidate list (Symbol/Ticker/"
+             "Fund Symbol/Candidate Symbol header). When supplied this is "
+             "the authoritative candidate universe for the brief.",
     )
     p_build.add_argument(
         "--candidate-universe-mode",

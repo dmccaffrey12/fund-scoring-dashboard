@@ -146,12 +146,46 @@ def _render_header(
             f' <span class="alias">(resolved to '
             f"<code>{_esc(resolved_ticker)}</code> via share-class alias)</span>"
         )
+
+    # Prominent candidate-universe banner so reviewers see the source at a
+    # glance — the committee list, the candidate-exposures fallback, or
+    # discovery mode.
+    cu_source = summary.get("candidate_universe_source")
+    if cu_source == "committee_list":
+        size = summary.get("committee_list_size") or 0
+        banner = (
+            '<p class="universe-banner committee">'
+            "<strong>Candidate universe:</strong> uploaded committee "
+            f"candidate list (<strong>{_esc(size)} symbol(s)</strong>) — "
+            "this brief is scoped to the names you uploaded for "
+            "committee review."
+            "</p>"
+        )
+    elif summary.get("restrict_to_candidate_exposures"):
+        size = summary.get("candidate_universe_size") or 0
+        banner = (
+            '<p class="universe-banner uploaded">'
+            "<strong>Candidate universe:</strong> uploaded candidate "
+            f"exposures (<strong>{_esc(size)} symbol(s)</strong>)."
+            "</p>"
+        )
+    else:
+        banner = (
+            '<p class="universe-banner discovery">'
+            "<strong>Candidate universe:</strong> discovery mode — full "
+            "scored universe in the same category. Upload a committee "
+            "candidate list to scope this brief to the names actually "
+            "under consideration."
+            "</p>"
+        )
+
     return (
         '<header class="brief-header">'
         f"<h1>Replacement Brief — <code>{_esc(ticker)}</code>"
         f"{alias_html}</h1>"
         f'<p class="meta">Run date: <strong>{_esc(run_date)}</strong> '
         f"· Generated: {_esc(generated)}</p>"
+        f"{banner}"
         "</header>"
     )
 
@@ -220,7 +254,34 @@ def _render_methodology(summary: Mapping[str, Any]) -> str:
         "Filter: <strong>same Morningstar category</strong> "
         f"(<code>{_esc(summary.get('category') or 'unknown')}</code>)."
     )
-    if summary.get("restrict_to_candidate_exposures"):
+    cu_source = summary.get("candidate_universe_source")
+    if cu_source == "committee_list":
+        items.append(
+            "Candidate universe: <strong>uploaded committee candidate "
+            f"list</strong> ({_esc(summary.get('committee_list_size') or 0)} "
+            "symbol(s)). This is the authoritative set of names under "
+            "consideration for replacing the current holding — the full "
+            "scored universe is <em>not</em> used for this staff-facing "
+            "short list."
+        )
+        held_excl = summary.get("committee_list_excluded_held_symbols") or []
+        if held_excl:
+            items.append(
+                "Held names excluded from the committee list: "
+                + ", ".join(f"<code>{_esc(s)}</code>" for s in held_excl)
+                + ". Toggle <em>Include already-held names</em> in the "
+                "Streamlit page to retain them."
+            )
+        missing_scored = (
+            summary.get("committee_list_missing_from_scored_universe") or []
+        )
+        if missing_scored:
+            items.append(
+                "Committee-list names not in the scored universe "
+                "(included as un-scored rows): "
+                + ", ".join(f"<code>{_esc(s)}</code>" for s in missing_scored)
+            )
+    elif summary.get("restrict_to_candidate_exposures"):
         items.append(
             "Candidate universe: <strong>uploaded curated candidate-exposures "
             f"file</strong> ({_esc(summary.get('candidate_universe_size') or 0)} "
@@ -230,7 +291,9 @@ def _render_methodology(summary: Mapping[str, Any]) -> str:
     else:
         items.append(
             "Candidate universe: <strong>full scored universe</strong> "
-            "in the same category."
+            "in the same category (<em>discovery mode</em> — upload a "
+            "committee candidate list to scope this brief to the names "
+            "actually under consideration)."
         )
     items.append(
         "Ranking: <strong>Consensus_Rank</strong> (mean of 2023 and 2025 "
@@ -524,6 +587,16 @@ h2 {
 header.brief-header { border-bottom: 2px solid #222; padding-bottom: 10px; }
 .meta { color: #555; margin: 4px 0 0; font-size: 12px; }
 .alias { color: #555; font-weight: normal; font-size: 14px; }
+.universe-banner {
+    margin: 8px 0 0;
+    padding: 6px 10px;
+    border-left: 4px solid #888;
+    background: #f6f6f6;
+    font-size: 12px;
+}
+.universe-banner.committee { border-left-color: #1f6f3f; background: #ecf6ee; }
+.universe-banner.uploaded  { border-left-color: #1f4e8c; background: #eef3fa; }
+.universe-banner.discovery { border-left-color: #b58000; background: #fff7e0; }
 code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
        font-size: 12px; background: #f4f4f4; padding: 1px 4px;
        border-radius: 3px; }

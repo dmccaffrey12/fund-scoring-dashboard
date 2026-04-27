@@ -2456,6 +2456,78 @@ elif page == "Monthly Workflow":
                 "Exclude already-held", value=False, key="mw_rw_exclude",
             )
 
+        # --- Committee candidate list (authoritative replacement universe) ---
+        from candidate_list_intake import (
+            candidate_list_template_csv as _cand_list_template,
+            parse_candidate_list as _parse_candidate_list,
+            summarize_report as _summarize_candidate_list_report,
+            validate_candidate_list as _validate_candidate_list,
+        )
+
+        st.markdown(
+            "**Replacement candidates CSV** *(optional, recommended for "
+            "committee briefs)*"
+        )
+        st.caption(
+            "Upload the actual names under consideration for replacing "
+            "this holding. **When provided, the brief uses ONLY these "
+            "candidates** — the full same-category universe is no longer "
+            "used for staff-facing output. This is separate from the "
+            "Candidate exposures CSV below, which is for benchmark-fit / "
+            "stylebox / sector calculations. "
+            "Minimum schema: a symbol column named `Symbol`, `Ticker`, "
+            "`Fund Symbol`, or `Candidate Symbol` (case-insensitive). "
+            "Optional columns preserved when present: `Name`, `Notes`, "
+            "`Rationale`, `Active_Passive`, `Fund_Type`, `Category`."
+        )
+        cl_cols = st.columns([2, 1])
+        with cl_cols[0]:
+            cand_list_file = st.file_uploader(
+                "Replacement candidates CSV (optional, recommended for committee briefs)",
+                type=["csv"],
+                key="mw_rw_candidate_list",
+            )
+        with cl_cols[1]:
+            st.download_button(
+                "⬇︎ Template CSV",
+                data=_cand_list_template().encode("utf-8"),
+                file_name="replacement_candidates_template.csv",
+                mime="text/csv",
+                help=(
+                    "Minimum-schema template — Symbol column is required, "
+                    "all other columns optional."
+                ),
+                key="mw_rw_cl_template_dl",
+            )
+
+        rw_candidate_list = None
+        if cand_list_file is not None:
+            try:
+                rw_candidate_list = _parse_candidate_list(cand_list_file)
+                cl_report = _validate_candidate_list(
+                    rw_candidate_list, source_label="candidate_list",
+                )
+                if cl_report["failed"]:
+                    st.error(_summarize_candidate_list_report(cl_report))
+                elif cl_report["warnings"]:
+                    st.warning(_summarize_candidate_list_report(cl_report))
+                else:
+                    st.caption(_summarize_candidate_list_report(cl_report))
+                if rw_candidate_list is not None and not rw_candidate_list.empty:
+                    st.caption(
+                        f"**Authoritative candidate set:** "
+                        f"{len(rw_candidate_list)} symbol(s) — "
+                        + ", ".join(
+                            "`" + s + "`"
+                            for s in rw_candidate_list["Symbol"]
+                            .astype(str).head(15).tolist()
+                        )
+                        + ("…" if len(rw_candidate_list) > 15 else "")
+                    )
+            except Exception as exc:
+                st.error(f"Failed to parse candidate list: {exc}")
+                rw_candidate_list = None
+
         # --- Optional benchmark-fit / portfolio-alignment uploads ---
         with st.expander(
             "Benchmark-fit (optional) — upload exposures to score "
@@ -2693,6 +2765,7 @@ elif page == "Monthly Workflow":
                         benchmark_exposures=rw_bench_exp if rw_fit_ready else None,
                         benchmark_weights=rw_bench_weights if rw_fit_ready else None,
                         candidate_exposures=rw_cand_exp,
+                        candidate_list=rw_candidate_list,
                         candidate_universe_mode=uni_mode,
                         exclude_already_held=(False if include_held else None),
                     )
@@ -2731,9 +2804,43 @@ elif page == "Monthly Workflow":
                         f"`{summary.get('ticker')}` → "
                         f"`{summary.get('resolved_ticker')}`."
                     )
-                if summary.get("restrict_to_candidate_exposures"):
+                cu_source = summary.get("candidate_universe_source")
+                if cu_source == "committee_list":
+                    st.success(
+                        "Candidate universe: **uploaded committee "
+                        f"candidate list** "
+                        f"({summary.get('committee_list_size') or 0} "
+                        "symbol(s)) — this brief uses only the names you "
+                        "uploaded for committee review."
+                    )
+                    held_excl = (
+                        summary.get(
+                            "committee_list_excluded_held_symbols"
+                        ) or []
+                    )
+                    if held_excl:
+                        st.warning(
+                            "Excluded as already-held model positions: "
+                            + ", ".join("`" + s + "`" for s in held_excl)
+                            + ". Toggle **Include already-held names** "
+                            "below to keep them in the table."
+                        )
+                    missing_scored = (
+                        summary.get(
+                            "committee_list_missing_from_scored_universe"
+                        ) or []
+                    )
+                    if missing_scored:
+                        st.info(
+                            "Committee-list names missing from the "
+                            "scored universe (included as un-scored "
+                            "rows): "
+                            + ", ".join("`" + s + "`" for s in missing_scored)
+                        )
+                elif summary.get("restrict_to_candidate_exposures"):
                     st.caption(
-                        "Candidate universe: **uploaded** "
+                        "Candidate universe: **uploaded candidate "
+                        "exposures** "
                         f"({summary.get('candidate_universe_size') or 0} "
                         "curated symbol(s)). "
                         + (
@@ -2744,8 +2851,11 @@ elif page == "Monthly Workflow":
                     )
                 else:
                     st.caption(
-                        "Candidate universe: **full scored universe** in "
-                        "the same category. "
+                        "Candidate universe: **discovery mode** — full "
+                        "scored universe in the same category. "
+                        "Upload a committee candidate list above for a "
+                        "staff-facing brief scoped to the names actually "
+                        "under consideration. "
                         + (
                             "Already-held model positions excluded."
                             if summary.get("exclude_already_held")

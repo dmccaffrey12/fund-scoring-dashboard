@@ -450,6 +450,59 @@ streamlit/runs/<run-date>/replacement_workbench/<TICKER>/
     replacement_exposure_delta.csv        # exposures after top fit replacement
 ```
 
+### Committee candidate list (optional, recommended for committee briefs)
+
+The replacement workbench accepts an **authoritative candidate list** —
+a small CSV of names the committee actually wants discussed for a given
+replacement decision. When supplied it overrides same-category discovery
+so the staff-facing short list and printable brief contain only those
+symbols (plus any held-passive sleeves the user explicitly opts to
+include).
+
+**Schema** — one column is required (the symbol). Headers are matched
+case-insensitively and any of the following are accepted:
+`Symbol`, `Ticker`, `Fund Symbol`, `Candidate Symbol`. Optional metadata
+columns are preserved when present:
+
+| Column | Notes |
+|--------|-------|
+| `Name` / `Fund Name` | Display name. Wins over the exposure-CSV name and the scored-universe name. |
+| `Active_Passive` / `Active/Passive` | Free text — passed through. |
+| `Fund_Type` / `Fund Type` | Free text — passed through. |
+| `Category` / `Morningstar Category` | Free text — passed through. |
+| `Notes` / `Note` | Free text — passed through. |
+| `Rationale` | Free text — passed through. |
+
+Unknown columns survive the round-trip so user-supplied annotations are
+not lost. Symbols are upper-cased and stripped; blank rows and duplicate
+symbols are dropped (first occurrence wins).
+
+**Universe priority** — when both a candidate list and a candidate
+exposure CSV are uploaded, the candidate list wins for the universe and
+display names; the exposure CSV continues to drive benchmark-fit metrics
+for any of those symbols it covers. With no committee list, candidate
+exposures define the curated universe; with neither, the brief falls
+back to **discovery mode** (same-category scored universe), which the
+banner labels explicitly.
+
+**Already-held symbols** — by default the workbench excludes any
+committee-list entry that is already a model holding (e.g. SPYM-style
+passive sleeves) and surfaces them in
+`summary["committee_list_excluded_held_symbols"]` so they are visible,
+not silently dropped. Toggle `exclude_already_held=False` (or the
+"Include already-held names" UI control) to keep them in the table —
+they appear with `Already_Held=True` and the curated display name.
+
+**Symbols missing from the scored universe** still appear in the
+candidate table as un-scored rows so the committee sees the full set
+they uploaded; they are listed in
+`summary["committee_list_missing_from_scored_universe"]` and tagged
+`Scored_In_Universe=False` with a clear `Reason_Label`.
+
+A downloadable **template CSV** is offered next to the upload widget
+in §4c of the Monthly Workflow page (`candidate_list_template_csv()`
+in code).
+
 ### Benchmark fit / portfolio alignment (optional)
 
 When the user uploads three YCharts exposure exports (model holdings,
