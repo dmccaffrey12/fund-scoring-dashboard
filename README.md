@@ -500,6 +500,27 @@ override the category or the top-N, toggle exclude-held, and renders
 three tabs: **Current Holding Profile**, **Top Candidates**, and the
 **Brief**. Share-class aliases are surfaced in a banner when they fire.
 
+### Printable brief & downloads (Streamlit Cloud)
+
+After a workbench build the page exposes a **Downloads** row beneath
+the tabs. Streamlit Cloud's run-archive directory (e.g.
+`/mount/src/.../runs/<date>/replacement_workbench/<TICKER>/`) is
+ephemeral and **not user-accessible** — anyone reviewing or printing
+the brief should pull the files from these download buttons:
+
+| Button | What it gives you |
+|--------|-------------------|
+| **Printable brief (HTML)** | Self-contained HTML with print CSS — open it and use the browser's *Print → Save as PDF* for paper-or-PDF committee review. Includes current-holding summary, methodology, top FundScore candidates, benchmark-fit candidates, headline picks, drift summary, data-quality notes, and the ephemeral-storage caveat. |
+| **Markdown brief** | Same content as the on-page Brief tab. |
+| **Candidates / Benchmark-fit / Current-vs-benchmark / Replacement-delta CSVs** | Each artifact appears only when non-empty for the run. |
+| **All artifacts (ZIP)** | One-click bundle of every available artifact above. |
+
+The printable brief is rendered entirely in-process — **Quarto is not
+required** for the replacement brief. Quarto remains optional for the
+full monthly committee packet (`reports/monthly_packet`); install it
+locally if you need that packet, but you can run the replacement
+workbench end-to-end on Streamlit Cloud without it.
+
 ### How it differs from the overlay and the Quarto packet
 
 | Tool | Scope | When to use |
