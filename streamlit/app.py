@@ -8,6 +8,7 @@ Run:  streamlit run app.py
 
 import io
 import os
+from typing import Dict
 
 import numpy as np
 import pandas as pd
@@ -2455,6 +2456,209 @@ elif page == "Monthly Workflow":
                 "Exclude already-held", value=False, key="mw_rw_exclude",
             )
 
+        # --- Optional benchmark-fit / portfolio-alignment uploads ---
+        with st.expander(
+            "Benchmark-fit (optional) — upload exposures to score "
+            "candidates by drift vs the static 100/0 equity benchmark",
+            expanded=False,
+        ):
+            from benchmark_fit import (
+                DEFAULT_BENCHMARK_WEIGHTS as _DEFAULT_BENCH_WEIGHTS,
+            )
+            from exposure_intake import (
+                parse_exposures as _parse_exposures,
+                summarize_report as _summarize_report,
+                validate_exposures as _validate_exposures,
+            )
+
+            st.caption(
+                "Upload three YCharts wide-format exposure exports "
+                "(Symbol, Name, 9 stylebox cols, 11 sector cols). The "
+                "benchmark uses the static default weights below — these "
+                "represent a globally-diversified 100/0 equity sleeve and "
+                "apply to every risk-tier model (lower-risk models are "
+                "scaled versions of the same equity sleeve)."
+            )
+            st.caption(
+                "**Candidate ideas exposures** is treated as the **curated "
+                "replacement universe**: when supplied, the staff-facing "
+                "Top Candidates and Benchmark-Fit ranking are restricted "
+                "to those tickers (e.g. only the active mutual funds / "
+                "ETFs you screened upstream). **Already-held model "
+                "positions are excluded by default** so passive sleeve "
+                "names (e.g. SPYM in the 100/0 model) cannot be "
+                "recommended as a replacement for an active holding "
+                "that sits alongside them. Display names are taken "
+                "from the candidate file when present."
+            )
+            ex_cols = st.columns(3)
+            with ex_cols[0]:
+                model_exp_file = st.file_uploader(
+                    "Model holdings exposures (100/0)",
+                    type=["csv"], key="mw_rw_model_exp",
+                )
+            with ex_cols[1]:
+                bench_exp_file = st.file_uploader(
+                    "Benchmark constituents exposures",
+                    type=["csv"], key="mw_rw_bench_exp",
+                )
+            with ex_cols[2]:
+                cand_exp_file = st.file_uploader(
+                    "Candidate ideas exposures",
+                    type=["csv"], key="mw_rw_cand_exp",
+                )
+
+            holdings_file = st.file_uploader(
+                "Model holdings library (CSV with Model_Name, Symbol, "
+                "Target_Weight) — defaults to model_holdings_master_library_converted.csv",
+                type=["csv"], key="mw_rw_holdings_file",
+            )
+
+            st.markdown("**Default benchmark weights**")
+            bench_weights_text = st.text_area(
+                "One SYMBOL=weight per line (weights as decimals).",
+                value="\n".join(
+                    f"{k}={v:g}" for k, v in _DEFAULT_BENCH_WEIGHTS.items()
+                ),
+                key="mw_rw_bench_weights_text",
+                height=120,
+            )
+
+            def _parse_weight_text(text: str):
+                out: Dict[str, float] = {}
+                for line in (text or "").splitlines():
+                    line = line.strip()
+                    if not line or line.startswith("#"):
+                        continue
+                    if "=" in line:
+                        k, _, v = line.partition("=")
+                    elif "," in line:
+                        k, _, v = line.partition(",")
+                    else:
+                        parts = line.split()
+                        if len(parts) != 2:
+                            continue
+                        k, v = parts
+                    try:
+                        out[k.strip().upper()] = float(v.strip())
+                    except ValueError:
+                        continue
+                return out
+
+            rw_bench_weights = _parse_weight_text(bench_weights_text) \
+                or dict(_DEFAULT_BENCH_WEIGHTS)
+            total_w = sum(rw_bench_weights.values())
+            if abs(total_w - 1.0) > 0.05:
+                st.warning(
+                    f"Benchmark weights sum to {total_w:.3f} — expected ~1.00."
+                )
+
+            st.markdown("**Curated-universe behavior**")
+            uni_mode = st.radio(
+                "Candidate universe",
+                options=["auto", "uploaded", "scored"],
+                index=0,
+                horizontal=True,
+                key="mw_rw_uni_mode",
+                help=(
+                    "auto: restrict to the uploaded candidate file when one "
+                    "is provided, else fall back to the scored universe. "
+                    "uploaded: always restrict to the uploaded candidate "
+                    "file (curated active-replacement universe). "
+                    "scored: ignore the curated file and rank against the "
+                    "full scored universe (legacy behavior)."
+                ),
+            )
+            include_held = st.checkbox(
+                "Include already-held names in candidate list",
+                value=False,
+                key="mw_rw_include_held",
+                help=(
+                    "By default already-held model positions (e.g. SPYM "
+                    "in the 100/0 model) are excluded from staff-facing "
+                    "replacement recommendations — only the holding being "
+                    "replaced is allowed. Toggle this on for diagnostic "
+                    "review or when intentionally double-checking passive "
+                    "exposures."
+                ),
+            )
+
+            # Parse + validate any uploaded exposures.
+            rw_model_exp = None
+            rw_bench_exp = None
+            rw_cand_exp = None
+            rw_model_holdings = None
+
+            if model_exp_file is not None:
+                try:
+                    rw_model_exp = _parse_exposures(model_exp_file)
+                    rep = _validate_exposures(
+                        rw_model_exp, source_label="model_exposures",
+                    )
+                    if rep["failed"]:
+                        st.error(_summarize_report(rep))
+                    elif rep["warnings"]:
+                        st.warning(_summarize_report(rep))
+                    else:
+                        st.caption(_summarize_report(rep))
+                except Exception as exc:
+                    st.error(f"Failed to parse model exposures: {exc}")
+                    rw_model_exp = None
+            if bench_exp_file is not None:
+                try:
+                    rw_bench_exp = _parse_exposures(bench_exp_file)
+                    rep = _validate_exposures(
+                        rw_bench_exp, source_label="benchmark_exposures",
+                    )
+                    if rep["failed"]:
+                        st.error(_summarize_report(rep))
+                    elif rep["warnings"]:
+                        st.warning(_summarize_report(rep))
+                    else:
+                        st.caption(_summarize_report(rep))
+                except Exception as exc:
+                    st.error(f"Failed to parse benchmark exposures: {exc}")
+                    rw_bench_exp = None
+            if cand_exp_file is not None:
+                try:
+                    rw_cand_exp = _parse_exposures(cand_exp_file)
+                    rep = _validate_exposures(
+                        rw_cand_exp, source_label="candidate_exposures",
+                    )
+                    if rep["failed"]:
+                        st.error(_summarize_report(rep))
+                    elif rep["warnings"]:
+                        st.warning(_summarize_report(rep))
+                    else:
+                        st.caption(_summarize_report(rep))
+                except Exception as exc:
+                    st.error(f"Failed to parse candidate exposures: {exc}")
+                    rw_cand_exp = None
+            if holdings_file is not None:
+                try:
+                    rw_model_holdings = pd.read_csv(holdings_file)
+                except Exception as exc:
+                    st.error(f"Failed to parse holdings library: {exc}")
+                    rw_model_holdings = None
+
+            rw_fit_ready = (
+                rw_model_exp is not None
+                and rw_bench_exp is not None
+                and rw_model_holdings is not None
+            )
+            if rw_fit_ready:
+                st.success(
+                    "Benchmark-fit inputs ready. Drift columns + the "
+                    "exposure artifacts will be generated when you build "
+                    "the workbench."
+                )
+            else:
+                st.caption(
+                    "Upload model exposures, benchmark exposures, and a "
+                    "model holdings library to enable benchmark-fit "
+                    "ranking. Without them, the workbench runs as before."
+                )
+
         build_rw = st.button(
             "Build Replacement Short List",
             disabled=(not rw_ticker),
@@ -2462,6 +2666,19 @@ elif page == "Monthly Workflow":
             type="primary",
         )
         if build_rw and rw_ticker:
+            # If a holdings library was uploaded but exposures weren't,
+            # we still pass holdings=None so the fit layer stays off.
+            rw_holdings_filtered = None
+            if rw_fit_ready and rw_model_holdings is not None:
+                if "Model_Name" in rw_model_holdings.columns:
+                    h = rw_model_holdings[
+                        rw_model_holdings["Model_Name"].astype(str).str.strip()
+                        == "100/0"
+                    ].copy()
+                    rw_holdings_filtered = h if not h.empty else rw_model_holdings
+                else:
+                    rw_holdings_filtered = rw_model_holdings
+
             try:
                 with st.spinner(f"Researching replacements for {rw_ticker}…"):
                     rw_bundle = workflow_ui.generate_replacement_workbench_for_run(
@@ -2471,6 +2688,13 @@ elif page == "Monthly Workflow":
                         top_n=int(rw_top_n),
                         exclude_held=rw_exclude_held,
                         persist=True,
+                        model_holdings=rw_holdings_filtered if rw_fit_ready else None,
+                        model_exposures=rw_model_exp if rw_fit_ready else None,
+                        benchmark_exposures=rw_bench_exp if rw_fit_ready else None,
+                        benchmark_weights=rw_bench_weights if rw_fit_ready else None,
+                        candidate_exposures=rw_cand_exp,
+                        candidate_universe_mode=uni_mode,
+                        exclude_already_held=(False if include_held else None),
                     )
                 _ss["mw_rw_last_ticker"] = rw_ticker
                 _ss["mw_rw_last_run_date"] = rw_run_date
@@ -2504,9 +2728,42 @@ elif page == "Monthly Workflow":
                         f"`{summary.get('ticker')}` → "
                         f"`{summary.get('resolved_ticker')}`."
                     )
-                tab_prof, tab_cand, tab_brief = st.tabs(
-                    ["Current Holding Profile", "Top Candidates", "Brief"]
-                )
+                if summary.get("restrict_to_candidate_exposures"):
+                    st.caption(
+                        "Candidate universe: **uploaded** "
+                        f"({summary.get('candidate_universe_size') or 0} "
+                        "curated symbol(s)). "
+                        + (
+                            "Already-held model positions excluded."
+                            if summary.get("exclude_already_held")
+                            else "Already-held model positions retained."
+                        )
+                    )
+                else:
+                    st.caption(
+                        "Candidate universe: **full scored universe** in "
+                        "the same category. "
+                        + (
+                            "Already-held model positions excluded."
+                            if summary.get("exclude_already_held")
+                            else "Already-held model positions flagged but kept."
+                        )
+                    )
+                fit_enabled = bool(summary.get("benchmark_fit_enabled"))
+                if fit_enabled:
+                    tab_prof, tab_cand, tab_fit, tab_drift, tab_brief = st.tabs([
+                        "Current Holding Profile",
+                        "Top Candidates",
+                        "Benchmark-Fit Ranking",
+                        "Current vs Benchmark",
+                        "Brief",
+                    ])
+                else:
+                    tab_prof, tab_cand, tab_brief = st.tabs(
+                        ["Current Holding Profile", "Top Candidates", "Brief"]
+                    )
+                    tab_fit = tab_drift = None
+
                 with tab_prof:
                     st.dataframe(
                         loaded_rw.get("current_profile", pd.DataFrame()),
@@ -2517,6 +2774,56 @@ elif page == "Monthly Workflow":
                         loaded_rw.get("candidates", pd.DataFrame()),
                         use_container_width=True, hide_index=True,
                     )
+                if fit_enabled and tab_fit is not None:
+                    with tab_fit:
+                        bw = summary.get("benchmark_weights") or {}
+                        if bw:
+                            wstr = ", ".join(
+                                f"{k} {v:.0%}" for k, v in bw.items()
+                            )
+                            st.caption(f"Benchmark weights: {wstr}")
+                        st.markdown(
+                            f"**Baseline sleeve fit:** "
+                            f"{summary.get('baseline_fit_label', '—')} · "
+                            f"total drift "
+                            f"{summary.get('baseline_total_abs_drift', 0):.3f} · "
+                            f"max bucket "
+                            f"`{summary.get('baseline_max_drift_bucket') or '—'}` "
+                            f"({summary.get('baseline_max_abs_drift', 0):.3f})"
+                        )
+                        st.markdown(
+                            "**Best by FundScore:** "
+                            f"`{summary.get('best_fundscore_candidate') or '—'}` · "
+                            "**Best by benchmark fit:** "
+                            f"`{summary.get('best_benchmark_fit_candidate') or '—'}` · "
+                            "**Balanced:** "
+                            f"`{summary.get('balanced_candidate') or '—'}`"
+                        )
+                        st.dataframe(
+                            loaded_rw.get(
+                                "benchmark_fit_candidates", pd.DataFrame(),
+                            ),
+                            use_container_width=True, hide_index=True,
+                        )
+                if fit_enabled and tab_drift is not None:
+                    with tab_drift:
+                        st.dataframe(
+                            loaded_rw.get(
+                                "current_vs_benchmark", pd.DataFrame(),
+                            ),
+                            use_container_width=True, hide_index=True,
+                        )
+                        rd = loaded_rw.get(
+                            "replacement_delta", pd.DataFrame(),
+                        )
+                        if not rd.empty:
+                            st.markdown(
+                                "**After top benchmark-fit replacement:**"
+                            )
+                            st.dataframe(
+                                rd,
+                                use_container_width=True, hide_index=True,
+                            )
                 with tab_brief:
                     st.markdown(loaded_rw.get("brief_markdown", ""))
 

@@ -1,0 +1,6 @@
+Symbol,Name,Equity Stylebox Large Cap Value Exposure,Equity Stylebox Large Cap Blend Exposure,Equity Stylebox Large Cap Growth Exposure,Equity Stylebox Mid Cap Value Exposure,Equity Stylebox Mid Cap Blend Exposure,Equity Stylebox Mid Cap Growth Exposure,Equity Stylebox Small Cap Value Exposure,Equity Stylebox Small Cap Blend Exposure,Equity Stylebox Small Cap Growth Exposure,Basic Materials Exposure,Consumer Cyclical Exposure,Financial Services Exposure,Real Estate Exposure,Communication Services Exposure,Energy Exposure,Industrials Exposure,Technology Exposure,Consumer Defensive Exposure,Healthcare Exposure,Utilities Exposure
+LLLA,Large Blend Core Fund,0.20,0.40,0.20,0.05,0.05,0.05,0.02,0.02,0.01,0.05,0.10,0.15,0.02,0.10,0.04,0.10,0.30,0.05,0.07,0.02
+LLLB,Mid-Cap Blend Fund,0.00,0.05,0.05,0.20,0.30,0.20,0.05,0.10,0.05,0.06,0.10,0.15,0.05,0.04,0.05,0.20,0.20,0.05,0.08,0.02
+LLLC,Small-Cap Blend Fund,0.00,0.00,0.00,0.00,0.05,0.00,0.30,0.40,0.25,0.05,0.13,0.17,0.07,0.04,0.06,0.16,0.15,0.04,0.11,0.02
+LLLD,Foreign Large Blend Fund,0.25,0.40,0.25,0.03,0.04,0.02,0.00,0.01,0.00,0.06,0.08,0.25,0.02,0.05,0.04,0.20,0.10,0.07,0.10,0.03
+LLLE,Emerging Markets Fund,0.20,0.30,0.30,0.05,0.05,0.05,0.02,0.02,0.01,0.08,0.10,0.20,0.02,0.07,0.04,0.08,0.27,0.04,0.04,0.06
