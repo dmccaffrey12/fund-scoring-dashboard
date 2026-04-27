@@ -420,6 +420,9 @@ def generate_replacement_workbench_for_run(
     candidate_universe_mode: str = "auto",
     restrict_to_candidate_exposures: Optional[bool] = None,
     exclude_already_held: Optional[bool] = None,
+    fund_type_override: Optional[str] = None,
+    apply_fund_type_filter: Optional[bool] = None,
+    apply_category_filter: Optional[bool] = None,
 ) -> Dict[str, Any]:
     """Build + (optionally) persist a replacement short list for one ticker.
 
@@ -453,6 +456,9 @@ def generate_replacement_workbench_for_run(
         candidate_universe_mode=candidate_universe_mode,
         restrict_to_candidate_exposures=restrict_to_candidate_exposures,
         exclude_already_held=exclude_already_held,
+        fund_type_override=fund_type_override,
+        apply_fund_type_filter=apply_fund_type_filter,
+        apply_category_filter=apply_category_filter,
     )
 
     out_dir = workbench_dir(runs_dir, run_date, ticker)

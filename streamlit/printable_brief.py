@@ -151,31 +151,76 @@ def _render_header(
     # glance — the committee list, the candidate-exposures fallback, or
     # discovery mode.
     cu_source = summary.get("candidate_universe_source")
+    inferred_cat = summary.get("inferred_category") or summary.get("category")
+    inferred_ft = summary.get("inferred_fund_type")
+    cat_used = bool(summary.get("category_filter_used"))
+    ft_used = bool(summary.get("fund_type_filter_used"))
+    ft_applied = summary.get("fund_type_filter")
     if cu_source == "committee_list":
         size = summary.get("committee_list_size") or 0
+        filter_line = (
+            "<br><span class=\"filter-line\"><strong>Discovery filters:</strong> "
+            "<em>not forced</em> — committee list is authoritative "
+            f"(inferred category <code>{_esc(inferred_cat or 'unknown')}</code>, "
+            f"inferred fund type <code>{_esc(inferred_ft or 'unknown')}</code>)."
+            "</span>"
+        )
         banner = (
             '<p class="universe-banner committee">'
             "<strong>Candidate universe:</strong> uploaded committee "
             f"candidate list (<strong>{_esc(size)} symbol(s)</strong>) — "
             "this brief is scoped to the names you uploaded for "
             "committee review."
+            f"{filter_line}"
             "</p>"
         )
     elif summary.get("restrict_to_candidate_exposures"):
         size = summary.get("candidate_universe_size") or 0
+        applied_bits: List[str] = []
+        if cat_used and inferred_cat:
+            applied_bits.append(_esc(inferred_cat))
+        if ft_used and ft_applied:
+            applied_bits.append(_esc(ft_applied))
+        applied_str = (
+            " + ".join(applied_bits) if applied_bits else "<em>none</em>"
+        )
+        filter_line = (
+            "<br><span class=\"filter-line\"><strong>Discovery filters:</strong> "
+            f"{applied_str} (inferred category "
+            f"<code>{_esc(inferred_cat or 'unknown')}</code>, "
+            f"inferred fund type <code>{_esc(inferred_ft or 'unknown')}</code>)."
+            "</span>"
+        )
         banner = (
             '<p class="universe-banner uploaded">'
             "<strong>Candidate universe:</strong> uploaded candidate "
             f"exposures (<strong>{_esc(size)} symbol(s)</strong>)."
+            f"{filter_line}"
             "</p>"
         )
     else:
+        applied_bits = []
+        if cat_used and inferred_cat:
+            applied_bits.append(_esc(inferred_cat))
+        if ft_used and ft_applied:
+            applied_bits.append(_esc(ft_applied))
+        applied_str = (
+            " + ".join(applied_bits) if applied_bits else "<em>none</em>"
+        )
+        filter_line = (
+            "<br><span class=\"filter-line\"><strong>Discovery filters:</strong> "
+            f"{applied_str} (inferred category "
+            f"<code>{_esc(inferred_cat or 'unknown')}</code>, "
+            f"inferred fund type <code>{_esc(inferred_ft or 'unknown')}</code>)."
+            "</span>"
+        )
         banner = (
             '<p class="universe-banner discovery">'
             "<strong>Candidate universe:</strong> discovery mode — full "
             "scored universe in the same category. Upload a committee "
             "candidate list to scope this brief to the names actually "
             "under consideration."
+            f"{filter_line}"
             "</p>"
         )
 

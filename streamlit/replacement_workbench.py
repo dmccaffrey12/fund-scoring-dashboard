@@ -251,6 +251,44 @@ def _resolve_category(
     return (cat if cat else None), ("universe" if cat else "unknown")
 
 
+def _infer_fund_type(
+    dual_table: pd.DataFrame,
+    resolved_ticker: str,
+) -> Optional[str]:
+    """Return the Fund_Type (Active/Passive/etc.) for ``resolved_ticker`` from
+    the scored universe, or ``None`` if not present / not labelled."""
+    if dual_table.empty or "Fund_Type" not in dual_table.columns:
+        return None
+    sym_col = _ensure_string_symbol(dual_table["Symbol"]).str.upper()
+    hit = dual_table.loc[sym_col == resolved_ticker]
+    if hit.empty:
+        return None
+    ft = hit.iloc[0].get("Fund_Type")
+    if ft is None or (isinstance(ft, float) and pd.isna(ft)):
+        return None
+    ft = str(ft).strip()
+    return ft if ft else None
+
+
+def _normalize_fund_type_filter(value: Any) -> Optional[str]:
+    """Normalize a user-provided fund-type override to either the canonical
+    label (``"Active"``/``"Passive"``) or ``None`` (= no filter).
+
+    Accepts ``"All"``, ``""``, ``None``, ``np.nan`` as "no filter". Anything
+    else is title-cased and stripped.
+    """
+    if value is None:
+        return None
+    if isinstance(value, float) and pd.isna(value):
+        return None
+    s = str(value).strip()
+    if not s:
+        return None
+    if s.lower() in {"all", "any", "either", "none"}:
+        return None
+    return s
+
+
 def _current_holding_profile(
     dual_table: pd.DataFrame,
     scorecard: Optional[pd.DataFrame],
@@ -325,24 +363,42 @@ def _candidate_pool(
     category: Optional[str],
     exclude_symbols: set,
     resolved_ticker: str,
+    fund_type: Optional[str] = None,
+    apply_category: bool = True,
 ) -> pd.DataFrame:
     """Filter the scored universe to same-category candidates, minus the
     current ticker and anything in ``exclude_symbols``.
 
-    If ``category`` is None, returns an empty frame (caller decides how to
-    surface the miss).
+    If ``apply_category`` is True (default) and ``category`` is None, returns
+    an empty frame (caller decides how to surface the miss). If
+    ``apply_category`` is False, the category filter is skipped entirely —
+    the entire scored universe (minus the resolved ticker) becomes the pool.
+
+    If ``fund_type`` is provided (e.g. ``"Active"``), the pool is also
+    restricted to rows whose ``Fund_Type`` matches. Rows without a
+    Fund_Type label are dropped from the filter (defensive default — when
+    an active replacement is being researched, an unlabeled row is more
+    likely to be passive noise than a clean active match).
     """
-    if dual_table.empty or not category:
+    if dual_table.empty:
         return dual_table.head(0)
-    if "Category" not in dual_table.columns:
+    if apply_category and not category:
+        return dual_table.head(0)
+    if apply_category and "Category" not in dual_table.columns:
         return dual_table.head(0)
 
     d = dual_table.copy()
     d["Symbol"] = _ensure_string_symbol(d["Symbol"])
     sym_upper = d["Symbol"].str.upper()
 
-    mask = d["Category"].astype(str).str.strip() == str(category).strip()
+    mask = pd.Series(True, index=d.index)
+    if apply_category:
+        mask &= d["Category"].astype(str).str.strip() == str(category).strip()
     mask &= sym_upper != resolved_ticker
+
+    if fund_type and "Fund_Type" in d.columns:
+        ft_target = str(fund_type).strip().lower()
+        mask &= d["Fund_Type"].astype(str).str.strip().str.lower() == ft_target
 
     return d.loc[mask].copy()
 
@@ -538,6 +594,29 @@ def _render_brief(
     lines.append("")
 
     lines.append("## Methodology")
+    inferred_cat = summary.get("inferred_category")
+    inferred_ft = summary.get("inferred_fund_type")
+    cat_used = summary.get("category_filter_used")
+    ft_used = summary.get("fund_type_filter_used")
+    ft_filter = summary.get("fund_type_filter")
+    if summary.get("candidate_universe_source") == "committee_list":
+        lines.append(
+            "- **Discovery filters:** *not forced* — committee list supplied "
+            f"(inferred category `{inferred_cat or 'unknown'}`, "
+            f"inferred fund type `{inferred_ft or 'unknown'}`)."
+        )
+    else:
+        applied_bits: List[str] = []
+        if cat_used:
+            applied_bits.append(f"`{category or 'unknown'}`")
+        if ft_used:
+            applied_bits.append(f"`{ft_filter}`")
+        applied = " + ".join(applied_bits) if applied_bits else "*none*"
+        lines.append(
+            f"- **Discovery filters:** {applied} "
+            f"(inferred category `{inferred_cat or 'unknown'}`, "
+            f"inferred fund type `{inferred_ft or 'unknown'}`)."
+        )
     lines.append(
         "- Filter: **same Morningstar category** "
         f"(`{category or 'unknown'}`)."
@@ -704,6 +783,9 @@ def build_replacement_workbench(
     candidate_universe_mode: str = "auto",
     restrict_to_candidate_exposures: Optional[bool] = None,
     exclude_already_held: Optional[bool] = None,
+    fund_type_override: Optional[str] = None,
+    apply_fund_type_filter: Optional[bool] = None,
+    apply_category_filter: Optional[bool] = None,
 ) -> ReplacementResult:
     """Build replacement short list artifacts for a single ticker.
 
@@ -910,7 +992,100 @@ def build_replacement_workbench(
         }
         exclude.update(held_excluding_target)
 
-    pool = _candidate_pool(dual_table, category, exclude, resolved)
+    # Infer fund-type (Active/Passive/etc.) from the resolved current holding.
+    inferred_fund_type = _infer_fund_type(dual_table, resolved)
+    # Fund-type filter resolution. Precedence:
+    #   1) Explicit ``fund_type_override`` ("All"/"" disables; anything else
+    #      becomes the active filter — caller is the source of truth).
+    #   2) ``apply_fund_type_filter`` toggle on top of the inferred value
+    #      when no explicit override is given.
+    #   3) Default: apply the inferred fund-type filter in **discovery
+    #      mode** (no committee list / no curated universe restriction)
+    #      so PRBLX-style active replacements don't surface passive noise.
+    #      When a committee list is supplied, do NOT force the filter —
+    #      the committee list is authoritative (PR #20 contract).
+    explicit_fund_type = _normalize_fund_type_filter(fund_type_override)
+    if fund_type_override is not None and explicit_fund_type is None:
+        # Caller passed "All"/"any"/empty → explicit "no filter"; honor it.
+        fund_type_filter: Optional[str] = None
+        fund_type_filter_source = "override_all"
+    elif explicit_fund_type is not None:
+        fund_type_filter = explicit_fund_type
+        fund_type_filter_source = "override"
+    elif apply_fund_type_filter is True:
+        fund_type_filter = inferred_fund_type
+        fund_type_filter_source = "inferred" if inferred_fund_type else "unknown"
+    elif apply_fund_type_filter is False:
+        fund_type_filter = None
+        fund_type_filter_source = "disabled"
+    else:
+        # Default: apply when we are in discovery mode and we know the type.
+        if has_committee_list:
+            # Committee list is authoritative; don't force a fund-type filter
+            # that could drop user-supplied symbols.
+            fund_type_filter = None
+            fund_type_filter_source = (
+                "committee_list_authoritative"
+            )
+        elif has_candidate_file:
+            # Candidate-exposures-only mode: still default-apply the filter
+            # so passive noise stays out of an active replacement, but only
+            # when we successfully inferred a type. The exposure file is a
+            # *universe* restriction; the type filter is layered on top to
+            # avoid passive crosstalk if the file mixes types.
+            fund_type_filter = inferred_fund_type
+            fund_type_filter_source = (
+                "inferred" if inferred_fund_type else "unknown"
+            )
+        else:
+            # Pure discovery mode → apply the inferred filter when possible.
+            fund_type_filter = inferred_fund_type
+            fund_type_filter_source = (
+                "inferred" if inferred_fund_type else "unknown"
+            )
+
+    # Category filter resolution. Same shape as fund-type. Default applies
+    # the resolved (override or inferred) category — committee list is the
+    # only path that suppresses category enforcement to avoid silently
+    # dropping committee-supplied symbols.
+    if apply_category_filter is True:
+        category_filter_used = bool(category)
+        category_filter_source = (
+            "override" if category_override else (
+                "inferred" if category else "unknown"
+            )
+        )
+    elif apply_category_filter is False:
+        category_filter_used = False
+        category_filter_source = "disabled"
+    else:
+        if has_committee_list:
+            # Don't drop committee symbols by category mismatch.
+            category_filter_used = False
+            category_filter_source = "committee_list_authoritative"
+        else:
+            category_filter_used = bool(category)
+            category_filter_source = (
+                "override" if category_override else (
+                    "inferred" if category else "unknown"
+                )
+            )
+
+    pool_category = category if category_filter_used else None
+    # Only skip the category gate when the filter was *explicitly disabled*
+    # (apply_category_filter=False, or committee_list authoritative). When
+    # the filter is simply unknown (no category inferred and no override),
+    # keep the legacy empty-pool behavior so the caller surfaces the gap.
+    pool_apply_category = True
+    if not category_filter_used and category_filter_source in {
+        "disabled", "committee_list_authoritative",
+    }:
+        pool_apply_category = False
+    pool = _candidate_pool(
+        dual_table, pool_category, exclude, resolved,
+        fund_type=fund_type_filter,
+        apply_category=pool_apply_category,
+    )
 
     candidates = _rank_candidates(
         pool, top_n=top_n, exclude_symbols=exclude,
@@ -938,6 +1113,43 @@ def build_replacement_workbench(
         excluded_held_in_committee_list = sorted(
             committee_list_symbols & held_excluded_set
         )
+        # When the caller explicitly opted into filters on top of the
+        # committee list (diagnostic-review path), do NOT back-fill committee
+        # symbols that fail those filters — the user asked for the filter,
+        # they want the row dropped.
+        explicit_ft_filter_active = bool(
+            fund_type_filter and fund_type_filter_source in {
+                "override", "inferred",
+            } and (
+                apply_fund_type_filter is True
+                or fund_type_filter_source == "override"
+            )
+        )
+        explicit_cat_filter_active = bool(
+            category_filter_used and category_filter_source in {
+                "override", "inferred",
+            } and (
+                apply_category_filter is True
+                or category_filter_source == "override"
+            )
+        )
+        scored_lookup: Dict[str, Dict[str, Any]] = {}
+        if explicit_ft_filter_active or explicit_cat_filter_active:
+            scored_view = dual_table.copy()
+            scored_view["Symbol"] = (
+                _ensure_string_symbol(scored_view["Symbol"]).str.upper()
+            )
+            for _, row in scored_view.iterrows():
+                scored_lookup[str(row["Symbol"])] = {
+                    "Fund_Type": row.get("Fund_Type"),
+                    "Category": row.get("Category"),
+                }
+        ft_target = (
+            str(fund_type_filter).strip().lower() if fund_type_filter else None
+        )
+        cat_target = (
+            str(category).strip() if category_filter_used and category else None
+        )
         missing_from_table: List[str] = []
         for sym in committee_list_symbols:
             if sym in already_in_table:
@@ -946,6 +1158,28 @@ def build_replacement_workbench(
                 continue
             if sym in held_excluded_set:
                 continue
+            if explicit_ft_filter_active and ft_target and sym in scored_lookup:
+                row_ft = scored_lookup[sym].get("Fund_Type")
+                if (
+                    row_ft is not None
+                    and str(row_ft).strip().lower() == ft_target
+                ):
+                    pass  # matches, fall through
+                elif row_ft is None or str(row_ft).strip() == "":
+                    pass  # unknown — leave it visible to staff
+                else:
+                    continue  # filtered out by explicit fund-type filter
+            if explicit_cat_filter_active and cat_target and sym in scored_lookup:
+                row_cat = scored_lookup[sym].get("Category")
+                if (
+                    row_cat is not None
+                    and str(row_cat).strip() == cat_target
+                ):
+                    pass
+                elif row_cat is None or str(row_cat).strip() == "":
+                    pass
+                else:
+                    continue  # filtered out by explicit category filter
             missing_from_table.append(sym)
         # Determinism: sort so identical inputs yield identical artifacts.
         missing_from_table.sort()
@@ -985,6 +1219,19 @@ def build_replacement_workbench(
         model_name=model_name,
     )
 
+    # ``filter_source`` is a single-string roll-up describing why this brief
+    # is filtered the way it is — useful for the printable brief banner.
+    if has_committee_list:
+        filter_source = "committee_list"
+    elif category_filter_used and fund_type_filter:
+        filter_source = "inferred"
+        if category_override or fund_type_filter_source == "override":
+            filter_source = "override"
+    elif fund_type_filter or category_filter_used:
+        filter_source = "partial"
+    else:
+        filter_source = "none"
+
     summary: Dict[str, Any] = {
         "ticker": original,
         "resolved_ticker": resolved,
@@ -993,6 +1240,19 @@ def build_replacement_workbench(
         "category": category,
         "category_source": cat_source,
         "category_override_used": bool(category_override),
+        "inferred_category": category if cat_source != "override" else (
+            _resolve_category(dual_table, resolved, None)[0]
+        ),
+        "inferred_fund_type": inferred_fund_type,
+        "fund_type_filter": fund_type_filter,
+        "fund_type_filter_used": bool(fund_type_filter),
+        "fund_type_filter_source": fund_type_filter_source,
+        "fund_type_override_used": (
+            fund_type_filter_source in {"override", "override_all"}
+        ),
+        "category_filter_used": bool(category_filter_used),
+        "category_filter_source": category_filter_source,
+        "filter_source": filter_source,
         "top_n_requested": int(top_n),
         "candidate_count": int(len(candidates)),
         "already_held_candidate_count": int(candidates["Already_Held"].sum())
@@ -1406,6 +1666,9 @@ def run_replacement_for_run(
     candidate_universe_mode: str = "auto",
     restrict_to_candidate_exposures: Optional[bool] = None,
     exclude_already_held: Optional[bool] = None,
+    fund_type_override: Optional[str] = None,
+    apply_fund_type_filter: Optional[bool] = None,
+    apply_category_filter: Optional[bool] = None,
 ) -> Dict[str, Any]:
     """Build + (optionally) persist a workbench for ``ticker`` against the
     archived run at ``run_date``.
@@ -1447,6 +1710,9 @@ def run_replacement_for_run(
         candidate_universe_mode=candidate_universe_mode,
         restrict_to_candidate_exposures=restrict_to_candidate_exposures,
         exclude_already_held=exclude_already_held,
+        fund_type_override=fund_type_override,
+        apply_fund_type_filter=apply_fund_type_filter,
+        apply_category_filter=apply_category_filter,
     )
 
     paths: Dict[str, str] = {}

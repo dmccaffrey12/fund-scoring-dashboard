@@ -185,6 +185,9 @@ def test_universe_mode_scored_keeps_legacy_behavior():
         candidate_exposures=_curated_candidate_exposures(),
         candidate_universe_mode="scored",
         exclude_already_held=False,
+        # Disable inferred fund-type filter to assert the legacy
+        # cross-type discovery output.
+        apply_fund_type_filter=False,
     )
     cand_syms = result.candidates["Symbol"].astype(str).str.upper().tolist()
     # In scored mode, the full scored universe (incl. PASSV) is fair game.
@@ -220,6 +223,10 @@ def test_no_candidate_file_keeps_legacy_default():
     result = build_replacement_workbench(
         _dual_table(), "LLLA", top_n=10, alias_map={},
         scorecard=_scorecard_for_passive(),
+        # Legacy assertion: the inferred fund-type filter is the new
+        # default, but this test pre-dates it and still wants to verify
+        # the universe-restriction defaults.
+        apply_fund_type_filter=False,
     )
     cand_syms = result.candidates["Symbol"].astype(str).str.upper().tolist()
     assert "PASSV" in cand_syms  # legacy: not excluded by default
@@ -249,6 +256,9 @@ def test_include_already_held_override_with_candidate_file():
         benchmark_weights=_bench_weights(),
         candidate_exposures=cand_with_passive,
         exclude_already_held=False,
+        # Override the inferred-fund-type filter so the user-supplied
+        # passive override actually surfaces in the candidate table.
+        fund_type_override="All",
     )
     cand_syms = result.candidates["Symbol"].astype(str).str.upper().tolist()
     assert "PASSV" in cand_syms

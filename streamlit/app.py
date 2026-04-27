@@ -8,7 +8,7 @@ Run:  streamlit run app.py
 
 import io
 import os
-from typing import Dict
+from typing import Dict, Optional
 
 import numpy as np
 import pandas as pd
@@ -2446,15 +2446,154 @@ elif page == "Monthly Workflow":
                 key="mw_rw_top_n",
             )
         with rw_cols[2]:
-            rw_category = st.text_input(
-                "Category override (optional)",
-                value="",
-                key="mw_rw_category",
-            )
+            pass  # Category override moved to discovery-filters block below.
         with rw_cols[3]:
             rw_exclude_held = st.checkbox(
                 "Exclude already-held", value=False, key="mw_rw_exclude",
             )
+
+        # ---- Inferred category / fund-type discovery filters ----------------
+        # Resolve aliases (e.g. PRBLX -> PRILX) and pull the holding's
+        # category + fund_type so the user can see what discovery would
+        # default to before they kick off the build.
+        rw_inferred_category: Optional[str] = None
+        rw_inferred_fund_type: Optional[str] = None
+        if rw_ticker:
+            try:
+                from symbol_aliases import (
+                    load_default_aliases as _load_aliases_for_infer,
+                    resolve_symbol as _resolve_for_infer,
+                )
+
+                _alias_map = _load_aliases_for_infer()
+                _universe_set: set = set()
+                if (
+                    rw_universe is not None
+                    and not rw_universe.empty
+                    and "Symbol" in rw_universe.columns
+                ):
+                    _universe_set = {
+                        str(s).strip().upper()
+                        for s in rw_universe["Symbol"].dropna().astype(str).tolist()
+                    }
+                _resolved_for_infer = _resolve_for_infer(
+                    rw_ticker, _alias_map, _universe_set,
+                )
+                if (
+                    _resolved_for_infer
+                    and rw_universe is not None
+                    and not rw_universe.empty
+                    and "Symbol" in rw_universe.columns
+                ):
+                    _sym_u = (
+                        rw_universe["Symbol"].astype(str).str.strip().str.upper()
+                    )
+                    _hit = rw_universe.loc[_sym_u == _resolved_for_infer]
+                    if not _hit.empty:
+                        _row0 = _hit.iloc[0]
+                        if "Category" in rw_universe.columns:
+                            _cat = _row0.get("Category")
+                            if pd.notna(_cat) and str(_cat).strip():
+                                rw_inferred_category = str(_cat).strip()
+                        if "Fund_Type" in rw_universe.columns:
+                            _ft = _row0.get("Fund_Type")
+                            if pd.notna(_ft) and str(_ft).strip():
+                                rw_inferred_fund_type = str(_ft).strip()
+            except Exception:
+                rw_inferred_category = None
+                rw_inferred_fund_type = None
+
+        st.markdown("**Discovery filters**")
+        st.caption(
+            "When you research a replacement, the workbench infers the "
+            "current holding's Morningstar **category** and **fund type** "
+            "(active / passive) from the scored universe and applies them "
+            "as filters by default. For PRBLX → PRILX, that defaults to "
+            "**Active + Large Blend**, so passive Large Blend names won't "
+            "surface unless you override below. *Committee candidate lists, "
+            "if uploaded, remain authoritative — these filters do not drop "
+            "user-supplied committee candidates.*"
+        )
+        if rw_ticker:
+            _inf_msg_bits = []
+            _inf_msg_bits.append(
+                f"category `{rw_inferred_category or 'unknown'}`"
+            )
+            _inf_msg_bits.append(
+                f"fund type `{rw_inferred_fund_type or 'unknown'}`"
+            )
+            st.caption(
+                f"Inferred for **{rw_ticker}**: " + ", ".join(_inf_msg_bits)
+                + (
+                    " — discovery will default to these unless overridden."
+                    if (rw_inferred_category or rw_inferred_fund_type)
+                    else " — no scored-universe metadata; filters will be "
+                    "skipped (graceful degrade)."
+                )
+            )
+
+        df_cols = st.columns([1.4, 1.2, 1])
+        with df_cols[0]:
+            _cat_default = rw_inferred_category or ""
+            rw_category = st.text_input(
+                "Category filter (defaults to inferred)",
+                value=_cat_default,
+                key="mw_rw_category",
+                help=(
+                    "Leave blank or type 'All' to disable category "
+                    "filtering. Defaults to the inferred Morningstar "
+                    "category for the current holding."
+                ),
+            )
+        with df_cols[1]:
+            ft_options = ["Inferred", "Active", "Passive", "All"]
+            rw_ft_choice = st.selectbox(
+                "Fund type filter",
+                options=ft_options,
+                index=0,
+                key="mw_rw_ft_choice",
+                help=(
+                    "Inferred uses the current holding's fund type "
+                    "(e.g. PRBLX → Active). Choose Active/Passive to force "
+                    "a specific type. All disables the fund-type filter."
+                ),
+            )
+        with df_cols[2]:
+            rw_apply_filters_in_committee = st.checkbox(
+                "Apply filters even with committee list",
+                value=False,
+                key="mw_rw_apply_filters_committee",
+                help=(
+                    "Off (default): an uploaded committee candidate list "
+                    "is authoritative — category/fund-type filters are NOT "
+                    "forced and committee-supplied symbols won't be dropped. "
+                    "On: filters apply on top of the committee list "
+                    "(useful for diagnostic review)."
+                ),
+            )
+
+        # Translate the radio into the workbench API.
+        if rw_ft_choice == "All":
+            rw_fund_type_override = "All"
+            rw_apply_fund_type_filter = False
+        elif rw_ft_choice == "Active":
+            rw_fund_type_override = "Active"
+            rw_apply_fund_type_filter = True
+        elif rw_ft_choice == "Passive":
+            rw_fund_type_override = "Passive"
+            rw_apply_fund_type_filter = True
+        else:  # "Inferred"
+            rw_fund_type_override = None
+            rw_apply_fund_type_filter = None  # default behavior
+
+        # Category selector: blank or "All" disables the category filter.
+        _cat_clean = (rw_category or "").strip()
+        if _cat_clean.lower() in {"all", "any", ""}:
+            rw_category_override = None
+            rw_apply_category_filter = False if _cat_clean else None
+        else:
+            rw_category_override = _cat_clean
+            rw_apply_category_filter = True
 
         # --- Committee candidate list (authoritative replacement universe) ---
         from candidate_list_intake import (
@@ -2753,10 +2892,21 @@ elif page == "Monthly Workflow":
 
             try:
                 with st.spinner(f"Researching replacements for {rw_ticker}…"):
+                    # When the user opts in to "Apply filters even with
+                    # committee list", force the category + fund-type
+                    # filters on top of the committee list. Default
+                    # (off) preserves PR #20: committee list authoritative.
+                    if rw_candidate_list is not None and not rw_apply_filters_in_committee:
+                        _apply_cat = False
+                        _apply_ft = False
+                    else:
+                        _apply_cat = rw_apply_category_filter
+                        _apply_ft = rw_apply_fund_type_filter
+
                     rw_bundle = workflow_ui.generate_replacement_workbench_for_run(
                         run_date=rw_run_date,
                         ticker=rw_ticker,
-                        category_override=(rw_category or None),
+                        category_override=rw_category_override,
                         top_n=int(rw_top_n),
                         exclude_held=rw_exclude_held,
                         persist=True,
@@ -2768,6 +2918,9 @@ elif page == "Monthly Workflow":
                         candidate_list=rw_candidate_list,
                         candidate_universe_mode=uni_mode,
                         exclude_already_held=(False if include_held else None),
+                        fund_type_override=rw_fund_type_override,
+                        apply_fund_type_filter=_apply_ft,
+                        apply_category_filter=_apply_cat,
                     )
                 _ss["mw_rw_last_ticker"] = rw_ticker
                 _ss["mw_rw_last_run_date"] = rw_run_date
@@ -2803,6 +2956,39 @@ elif page == "Monthly Workflow":
                         f"Share-class alias applied: "
                         f"`{summary.get('ticker')}` → "
                         f"`{summary.get('resolved_ticker')}`."
+                    )
+
+                # Surfaced inferred / applied discovery filters so the user
+                # can verify the brief was scoped the way they expected.
+                _inf_cat = summary.get("inferred_category")
+                _inf_ft = summary.get("inferred_fund_type")
+                _ft_used = summary.get("fund_type_filter_used")
+                _ft_filter = summary.get("fund_type_filter")
+                _cat_used = summary.get("category_filter_used")
+                _filter_src = summary.get("filter_source") or "—"
+                _applied_bits = []
+                if _cat_used:
+                    _applied_bits.append(
+                        summary.get("category") or _inf_cat or "category"
+                    )
+                if _ft_used:
+                    _applied_bits.append(_ft_filter or "type")
+                if summary.get("candidate_universe_source") == "committee_list":
+                    st.caption(
+                        f"Discovery filters: **not forced** — committee "
+                        f"list authoritative · inferred category "
+                        f"`{_inf_cat or 'unknown'}`, inferred fund type "
+                        f"`{_inf_ft or 'unknown'}`."
+                    )
+                else:
+                    _applied_str = (
+                        " + ".join(_applied_bits) if _applied_bits else "*none*"
+                    )
+                    st.caption(
+                        f"Discovery filters applied: **{_applied_str}** "
+                        f"(source: `{_filter_src}`) · inferred category "
+                        f"`{_inf_cat or 'unknown'}`, inferred fund type "
+                        f"`{_inf_ft or 'unknown'}`."
                     )
                 cu_source = summary.get("candidate_universe_source")
                 if cu_source == "committee_list":

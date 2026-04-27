@@ -128,8 +128,11 @@ def test_category_inferred_from_universe_and_same_category_filter():
 
 
 def test_candidates_are_ranked_by_consensus_and_preserve_dual_lens():
+    # Legacy behavior pre-dates the inferred fund-type filter; opt out so
+    # the test still exercises the cross-type ranking ordering.
     result = build_replacement_workbench(
         _dual_table(), "AAA", top_n=10, alias_map={},
+        apply_fund_type_filter=False,
     )
     # Both 2023 and 2025 columns surface on every row — we don't collapse
     # disagreement.
@@ -147,6 +150,7 @@ def test_candidates_are_ranked_by_consensus_and_preserve_dual_lens():
 def test_reason_labels_distinguish_perf_and_quality_led():
     result = build_replacement_workbench(
         _dual_table(), "AAA", top_n=10, alias_map={},
+        apply_fund_type_filter=False,
     )
     by_sym = dict(zip(result.candidates["Symbol"], result.candidates["Reason_Label"]))
     assert "Consensus" in by_sym["BBB"]
@@ -157,6 +161,7 @@ def test_reason_labels_distinguish_perf_and_quality_led():
 def test_top_n_caps_candidate_count():
     result = build_replacement_workbench(
         _dual_table(), "AAA", top_n=2, alias_map={},
+        apply_fund_type_filter=False,
     )
     assert len(result.candidates) == 2
     # Top-2 by consensus should be BBB (1) then DDD (2).
@@ -248,6 +253,7 @@ def test_already_held_flag_set_when_scorecard_provided():
     result = build_replacement_workbench(
         _dual_table(), "AAA",
         scorecard=_scorecard(), top_n=10, alias_map={},
+        apply_fund_type_filter=False,
     )
     rows = result.candidates.set_index("Symbol")
     # BBB is held by ModelY in the scorecard.
@@ -262,6 +268,7 @@ def test_exclude_held_drops_held_rows():
     result = build_replacement_workbench(
         _dual_table(), "AAA",
         scorecard=_scorecard(), top_n=10, exclude_held=True, alias_map={},
+        apply_fund_type_filter=False,
     )
     # BBB is held and must be removed when exclude_held=True.
     assert "BBB" not in set(result.candidates["Symbol"])
@@ -342,6 +349,7 @@ def test_workbench_dir_layout():
 def test_brief_markdown_mentions_category_and_candidates():
     result = build_replacement_workbench(
         _dual_table(), "AAA", top_n=3, alias_map={},
+        apply_fund_type_filter=False,
     )
     md = result.brief_markdown
     assert "Replacement Workbench — AAA" in md
