@@ -96,17 +96,22 @@ CANDIDATE_COLUMNS: List[str] = [
     "Already_Held",
     "Held_By_Models",
     "From_Uploaded_Universe",
+    "From_Committee_List",
+    "Scored_In_Universe",
     "Reason_Label",
 ]
 
 
 # Candidate universe modes.
-#   "auto"     — restrict to uploaded candidate exposures when one is provided,
+#   "auto"     — restrict to the committee candidate list when supplied; else
+#                restrict to uploaded candidate exposures when one is provided;
 #                otherwise fall back to the full scored universe (legacy).
-#   "uploaded" — always restrict to the uploaded candidate exposure file.
-#                Ignored (with a warning) if no candidate_exposures supplied.
+#   "uploaded" — always restrict to the uploaded curated universe (committee
+#                candidate list preferred; falls back to candidate exposures).
+#                Ignored (with an empty short list) if neither file supplied.
 #   "scored"   — never restrict; rank against the full scored universe like
-#                the pre-fit-layer workbench did.
+#                the pre-fit-layer workbench did. This is "discovery mode"
+#                and is labelled as such in staff-facing artifacts.
 CANDIDATE_UNIVERSE_MODES = ("auto", "uploaded", "scored")
 
 PROFILE_COLUMNS: List[str] = [
@@ -246,6 +251,44 @@ def _resolve_category(
     return (cat if cat else None), ("universe" if cat else "unknown")
 
 
+def _infer_fund_type(
+    dual_table: pd.DataFrame,
+    resolved_ticker: str,
+) -> Optional[str]:
+    """Return the Fund_Type (Active/Passive/etc.) for ``resolved_ticker`` from
+    the scored universe, or ``None`` if not present / not labelled."""
+    if dual_table.empty or "Fund_Type" not in dual_table.columns:
+        return None
+    sym_col = _ensure_string_symbol(dual_table["Symbol"]).str.upper()
+    hit = dual_table.loc[sym_col == resolved_ticker]
+    if hit.empty:
+        return None
+    ft = hit.iloc[0].get("Fund_Type")
+    if ft is None or (isinstance(ft, float) and pd.isna(ft)):
+        return None
+    ft = str(ft).strip()
+    return ft if ft else None
+
+
+def _normalize_fund_type_filter(value: Any) -> Optional[str]:
+    """Normalize a user-provided fund-type override to either the canonical
+    label (``"Active"``/``"Passive"``) or ``None`` (= no filter).
+
+    Accepts ``"All"``, ``""``, ``None``, ``np.nan`` as "no filter". Anything
+    else is title-cased and stripped.
+    """
+    if value is None:
+        return None
+    if isinstance(value, float) and pd.isna(value):
+        return None
+    s = str(value).strip()
+    if not s:
+        return None
+    if s.lower() in {"all", "any", "either", "none"}:
+        return None
+    return s
+
+
 def _current_holding_profile(
     dual_table: pd.DataFrame,
     scorecard: Optional[pd.DataFrame],
@@ -320,24 +363,42 @@ def _candidate_pool(
     category: Optional[str],
     exclude_symbols: set,
     resolved_ticker: str,
+    fund_type: Optional[str] = None,
+    apply_category: bool = True,
 ) -> pd.DataFrame:
     """Filter the scored universe to same-category candidates, minus the
     current ticker and anything in ``exclude_symbols``.
 
-    If ``category`` is None, returns an empty frame (caller decides how to
-    surface the miss).
+    If ``apply_category`` is True (default) and ``category`` is None, returns
+    an empty frame (caller decides how to surface the miss). If
+    ``apply_category`` is False, the category filter is skipped entirely —
+    the entire scored universe (minus the resolved ticker) becomes the pool.
+
+    If ``fund_type`` is provided (e.g. ``"Active"``), the pool is also
+    restricted to rows whose ``Fund_Type`` matches. Rows without a
+    Fund_Type label are dropped from the filter (defensive default — when
+    an active replacement is being researched, an unlabeled row is more
+    likely to be passive noise than a clean active match).
     """
-    if dual_table.empty or not category:
+    if dual_table.empty:
         return dual_table.head(0)
-    if "Category" not in dual_table.columns:
+    if apply_category and not category:
+        return dual_table.head(0)
+    if apply_category and "Category" not in dual_table.columns:
         return dual_table.head(0)
 
     d = dual_table.copy()
     d["Symbol"] = _ensure_string_symbol(d["Symbol"])
     sym_upper = d["Symbol"].str.upper()
 
-    mask = d["Category"].astype(str).str.strip() == str(category).strip()
+    mask = pd.Series(True, index=d.index)
+    if apply_category:
+        mask &= d["Category"].astype(str).str.strip() == str(category).strip()
     mask &= sym_upper != resolved_ticker
+
+    if fund_type and "Fund_Type" in d.columns:
+        ft_target = str(fund_type).strip().lower()
+        mask &= d["Fund_Type"].astype(str).str.strip().str.lower() == ft_target
 
     return d.loc[mask].copy()
 
@@ -350,6 +411,7 @@ def _rank_candidates(
     restrict_symbols: Optional[set] = None,
     annotation_universe: Optional[set] = None,
     name_overrides: Optional[Mapping[str, str]] = None,
+    committee_list_symbols: Optional[set] = None,
 ) -> pd.DataFrame:
     """Rank the same-category pool by Consensus_Rank (best first) and flag
     anything already held.
@@ -405,6 +467,7 @@ def _rank_candidates(
     already_held: List[bool] = []
     held_by: List[str] = []
     from_uploaded: List[bool] = []
+    from_committee: List[bool] = []
     annotate_set = annotation_universe if annotation_universe is not None \
         else restrict_symbols
     for sym in sym_upper_out:
@@ -414,9 +477,21 @@ def _rank_candidates(
         from_uploaded.append(
             bool(annotate_set is not None and sym in annotate_set)
         )
+        from_committee.append(
+            bool(committee_list_symbols is not None
+                 and sym in committee_list_symbols)
+        )
     p["Already_Held"] = already_held
     p["Held_By_Models"] = held_by
     p["From_Uploaded_Universe"] = from_uploaded
+    p["From_Committee_List"] = from_committee
+    # Rows that survive _candidate_pool came from the dual-score table, so
+    # they are by definition scored. The annotation is still useful so the
+    # printable brief can flag committee-list candidates that happen NOT to
+    # be in the scored universe (those are produced via the appended-rows
+    # path, see build_replacement_workbench).
+    if "Scored_In_Universe" not in p.columns:
+        p["Scored_In_Universe"] = True
 
     # Preserve curated names from the uploaded candidate file when supplied.
     if name_overrides:
@@ -519,11 +594,58 @@ def _render_brief(
     lines.append("")
 
     lines.append("## Methodology")
+    inferred_cat = summary.get("inferred_category")
+    inferred_ft = summary.get("inferred_fund_type")
+    cat_used = summary.get("category_filter_used")
+    ft_used = summary.get("fund_type_filter_used")
+    ft_filter = summary.get("fund_type_filter")
+    if summary.get("candidate_universe_source") == "committee_list":
+        lines.append(
+            "- **Discovery filters:** *not forced* — committee list supplied "
+            f"(inferred category `{inferred_cat or 'unknown'}`, "
+            f"inferred fund type `{inferred_ft or 'unknown'}`)."
+        )
+    else:
+        applied_bits: List[str] = []
+        if cat_used:
+            applied_bits.append(f"`{category or 'unknown'}`")
+        if ft_used:
+            applied_bits.append(f"`{ft_filter}`")
+        applied = " + ".join(applied_bits) if applied_bits else "*none*"
+        lines.append(
+            f"- **Discovery filters:** {applied} "
+            f"(inferred category `{inferred_cat or 'unknown'}`, "
+            f"inferred fund type `{inferred_ft or 'unknown'}`)."
+        )
     lines.append(
         "- Filter: **same Morningstar category** "
         f"(`{category or 'unknown'}`)."
     )
-    if summary.get("restrict_to_candidate_exposures"):
+    cu_source = summary.get("candidate_universe_source")
+    if cu_source == "committee_list":
+        lines.append(
+            "- **Candidate universe:** uploaded **committee candidate "
+            "list** "
+            f"({summary.get('committee_list_size') or 0} symbol(s)). "
+            "This is the authoritative set of names under consideration "
+            "for replacing the current holding — the full scored universe "
+            "is **not** used for the staff-facing short list."
+        )
+        if summary.get("committee_list_excluded_held_symbols"):
+            held = summary["committee_list_excluded_held_symbols"]
+            lines.append(
+                "- **Held names excluded from the committee list:** "
+                f"{', '.join('`' + s + '`' for s in held)}. Toggle the "
+                "include-already-held override to keep them in the table."
+            )
+        if summary.get("committee_list_missing_from_scored_universe"):
+            missing = summary["committee_list_missing_from_scored_universe"]
+            lines.append(
+                "- **Committee-list names not in the scored universe** "
+                "(included as un-scored rows): "
+                f"{', '.join('`' + s + '`' for s in missing)}."
+            )
+    elif summary.get("restrict_to_candidate_exposures"):
         lines.append(
             "- **Candidate universe:** restricted to the uploaded curated "
             "candidate-exposures file "
@@ -534,7 +656,9 @@ def _render_brief(
     else:
         lines.append(
             "- **Candidate universe:** full scored universe in the same "
-            "category."
+            "category (**discovery mode** — upload a committee candidate "
+            "list above to scope this brief to the names actually under "
+            "consideration)."
         )
     lines.append(
         "- Rank by **Consensus_Rank** (average of 2023 and 2025 ranks), "
@@ -655,9 +779,13 @@ def build_replacement_workbench(
     benchmark_exposures: Optional[pd.DataFrame] = None,
     benchmark_weights: Optional[Mapping[str, float]] = None,
     candidate_exposures: Optional[pd.DataFrame] = None,
+    candidate_list: Optional[pd.DataFrame] = None,
     candidate_universe_mode: str = "auto",
     restrict_to_candidate_exposures: Optional[bool] = None,
     exclude_already_held: Optional[bool] = None,
+    fund_type_override: Optional[str] = None,
+    apply_fund_type_filter: Optional[bool] = None,
+    apply_category_filter: Optional[bool] = None,
 ) -> ReplacementResult:
     """Build replacement short list artifacts for a single ticker.
 
@@ -691,12 +819,28 @@ def build_replacement_workbench(
     run_date:
         Optional ISO date string from the caller's run archive, recorded in
         the summary and brief for provenance.
+    candidate_list:
+        Optional DataFrame of the **committee candidate list** — the
+        actual names under consideration for replacing ``ticker`` (parsed
+        from a simple-schema CSV via ``candidate_list_intake``). When
+        supplied, this list is **authoritative** for the candidate
+        universe (FundScore short list + benchmark-fit ranking + brief),
+        overriding ``candidate_exposures``. Names from this list win for
+        staff-facing display.
+
+        Symbols in the list that are missing from the scored universe are
+        still included in the FundScore short list as un-scored rows so
+        the committee sees the same set the user uploaded — bench-fit
+        ranking only includes them if exposure data is also available.
     candidate_universe_mode:
         ``"auto"`` (default) restricts the FundScore short list and the
-        benchmark-fit ranking to the curated symbols in
-        ``candidate_exposures`` whenever that file is supplied. ``"uploaded"``
-        forces that restriction (warns if no candidate file). ``"scored"``
-        keeps the legacy behavior — rank against the full scored universe.
+        benchmark-fit ranking to the committee candidate list when
+        supplied; falls back to the symbols in ``candidate_exposures``
+        when only that is supplied; otherwise uses the full scored
+        universe (legacy "discovery" mode). ``"uploaded"`` forces a
+        curated-universe restriction (committee list preferred, then
+        candidate exposures); the short list is empty if neither is
+        supplied. ``"scored"`` keeps the discovery/legacy path.
     restrict_to_candidate_exposures:
         Explicit override for ``candidate_universe_mode``. ``True`` always
         restricts to the uploaded universe (no-op when no file supplied);
@@ -738,10 +882,40 @@ def build_replacement_workbench(
     held_lookup = _held_by_models(scorecard)
     held_symbols = _extract_held_symbols(scorecard)
 
-    # Build the curated candidate universe (symbols + display names) when
-    # the caller supplied a candidate_exposures file.
+    # Build the curated candidate universe (symbols + display names). The
+    # **committee candidate list** wins over ``candidate_exposures`` when
+    # both are supplied — the list is the user's authoritative statement
+    # of what staff should be considering.
     candidate_universe_symbols: Optional[set] = None
     candidate_name_overrides: Dict[str, str] = {}
+    committee_list_symbols: Optional[set] = None
+    committee_name_map: Dict[str, str] = {}
+
+    has_committee_list = (
+        candidate_list is not None
+        and isinstance(candidate_list, pd.DataFrame)
+        and not candidate_list.empty
+        and "Symbol" in candidate_list.columns
+    )
+    if has_committee_list:
+        sym_col = (
+            candidate_list["Symbol"].astype(str).str.strip().str.upper()
+        )
+        committee_list_symbols = {s for s in sym_col.tolist() if s}
+        # Pull display names: prefer Name, fall back to Fund_Name.
+        name_source = None
+        if "Name" in candidate_list.columns:
+            name_source = "Name"
+        elif "Fund_Name" in candidate_list.columns:
+            name_source = "Fund_Name"
+        if name_source is not None:
+            for s, n in zip(
+                sym_col.tolist(),
+                candidate_list[name_source].astype(str).tolist(),
+            ):
+                if s and n and n.strip() and n.strip().upper() != "NAN":
+                    committee_name_map[s] = n.strip()
+
     has_candidate_file = (
         candidate_exposures is not None and not candidate_exposures.empty
         and "Symbol" in candidate_exposures.columns
@@ -750,12 +924,26 @@ def build_replacement_workbench(
         sym_col = (
             candidate_exposures["Symbol"].astype(str).str.strip().str.upper()
         )
-        candidate_universe_symbols = {s for s in sym_col.tolist() if s}
+        # When no committee list supplied, candidate_exposures defines the
+        # universe (existing behavior). When both are supplied, the committee
+        # list defines the universe and exposures provides bench-fit data.
+        if not has_committee_list:
+            candidate_universe_symbols = {s for s in sym_col.tolist() if s}
         if "Name" in candidate_exposures.columns:
             for s, n in zip(sym_col.tolist(),
                              candidate_exposures["Name"].astype(str).tolist()):
                 if s and n and n.strip():
                     candidate_name_overrides[s] = n.strip()
+
+    # Committee-list names win over exposure-file names.
+    if committee_name_map:
+        candidate_name_overrides.update(committee_name_map)
+
+    # Promote the committee list to the authoritative universe.
+    if has_committee_list:
+        candidate_universe_symbols = set(committee_list_symbols or set())
+
+    has_curated_universe = bool(has_committee_list or has_candidate_file)
 
     # Resolve the universe-mode flags into a single boolean for the pool.
     if restrict_to_candidate_exposures is None:
@@ -764,11 +952,11 @@ def build_replacement_workbench(
         elif candidate_universe_mode == "scored":
             restrict_resolved = False
         else:  # "auto"
-            restrict_resolved = bool(has_candidate_file)
+            restrict_resolved = bool(has_curated_universe)
     else:
         restrict_resolved = bool(restrict_to_candidate_exposures)
 
-    if restrict_resolved and not has_candidate_file:
+    if restrict_resolved and not has_curated_universe:
         # Caller asked to restrict but supplied no curated universe — the
         # only honest response is "no candidates from the curated list".
         # Surface that via an empty candidate_universe_symbols set so
@@ -785,9 +973,12 @@ def build_replacement_workbench(
     )
 
     # Resolve exclude_already_held, defaulting True when a candidate file
-    # is present so SPYM (etc.) can't slip into the curated active list.
+    # or committee list is present so SPYM (etc.) can't slip into the
+    # curated active list.
     if exclude_already_held is None:
-        exclude_already_held_resolved = bool(has_candidate_file)
+        exclude_already_held_resolved = bool(
+            has_candidate_file or has_committee_list
+        )
     else:
         exclude_already_held_resolved = bool(exclude_already_held)
     # Legacy ``exclude_held`` still wins when explicitly truthy.
@@ -801,7 +992,100 @@ def build_replacement_workbench(
         }
         exclude.update(held_excluding_target)
 
-    pool = _candidate_pool(dual_table, category, exclude, resolved)
+    # Infer fund-type (Active/Passive/etc.) from the resolved current holding.
+    inferred_fund_type = _infer_fund_type(dual_table, resolved)
+    # Fund-type filter resolution. Precedence:
+    #   1) Explicit ``fund_type_override`` ("All"/"" disables; anything else
+    #      becomes the active filter — caller is the source of truth).
+    #   2) ``apply_fund_type_filter`` toggle on top of the inferred value
+    #      when no explicit override is given.
+    #   3) Default: apply the inferred fund-type filter in **discovery
+    #      mode** (no committee list / no curated universe restriction)
+    #      so PRBLX-style active replacements don't surface passive noise.
+    #      When a committee list is supplied, do NOT force the filter —
+    #      the committee list is authoritative (PR #20 contract).
+    explicit_fund_type = _normalize_fund_type_filter(fund_type_override)
+    if fund_type_override is not None and explicit_fund_type is None:
+        # Caller passed "All"/"any"/empty → explicit "no filter"; honor it.
+        fund_type_filter: Optional[str] = None
+        fund_type_filter_source = "override_all"
+    elif explicit_fund_type is not None:
+        fund_type_filter = explicit_fund_type
+        fund_type_filter_source = "override"
+    elif apply_fund_type_filter is True:
+        fund_type_filter = inferred_fund_type
+        fund_type_filter_source = "inferred" if inferred_fund_type else "unknown"
+    elif apply_fund_type_filter is False:
+        fund_type_filter = None
+        fund_type_filter_source = "disabled"
+    else:
+        # Default: apply when we are in discovery mode and we know the type.
+        if has_committee_list:
+            # Committee list is authoritative; don't force a fund-type filter
+            # that could drop user-supplied symbols.
+            fund_type_filter = None
+            fund_type_filter_source = (
+                "committee_list_authoritative"
+            )
+        elif has_candidate_file:
+            # Candidate-exposures-only mode: still default-apply the filter
+            # so passive noise stays out of an active replacement, but only
+            # when we successfully inferred a type. The exposure file is a
+            # *universe* restriction; the type filter is layered on top to
+            # avoid passive crosstalk if the file mixes types.
+            fund_type_filter = inferred_fund_type
+            fund_type_filter_source = (
+                "inferred" if inferred_fund_type else "unknown"
+            )
+        else:
+            # Pure discovery mode → apply the inferred filter when possible.
+            fund_type_filter = inferred_fund_type
+            fund_type_filter_source = (
+                "inferred" if inferred_fund_type else "unknown"
+            )
+
+    # Category filter resolution. Same shape as fund-type. Default applies
+    # the resolved (override or inferred) category — committee list is the
+    # only path that suppresses category enforcement to avoid silently
+    # dropping committee-supplied symbols.
+    if apply_category_filter is True:
+        category_filter_used = bool(category)
+        category_filter_source = (
+            "override" if category_override else (
+                "inferred" if category else "unknown"
+            )
+        )
+    elif apply_category_filter is False:
+        category_filter_used = False
+        category_filter_source = "disabled"
+    else:
+        if has_committee_list:
+            # Don't drop committee symbols by category mismatch.
+            category_filter_used = False
+            category_filter_source = "committee_list_authoritative"
+        else:
+            category_filter_used = bool(category)
+            category_filter_source = (
+                "override" if category_override else (
+                    "inferred" if category else "unknown"
+                )
+            )
+
+    pool_category = category if category_filter_used else None
+    # Only skip the category gate when the filter was *explicitly disabled*
+    # (apply_category_filter=False, or committee_list authoritative). When
+    # the filter is simply unknown (no category inferred and no override),
+    # keep the legacy empty-pool behavior so the caller surfaces the gap.
+    pool_apply_category = True
+    if not category_filter_used and category_filter_source in {
+        "disabled", "committee_list_authoritative",
+    }:
+        pool_apply_category = False
+    pool = _candidate_pool(
+        dual_table, pool_category, exclude, resolved,
+        fund_type=fund_type_filter,
+        apply_category=pool_apply_category,
+    )
 
     candidates = _rank_candidates(
         pool, top_n=top_n, exclude_symbols=exclude,
@@ -809,7 +1093,122 @@ def build_replacement_workbench(
         restrict_symbols=pool_restrict_symbols,
         annotation_universe=candidate_universe_symbols,
         name_overrides=candidate_name_overrides,
+        committee_list_symbols=committee_list_symbols,
     )
+
+    # When a committee list was supplied, ensure every symbol in the list
+    # appears in the staff-facing candidate table — even if it's missing
+    # from the scored universe. Those rows are appended as un-scored
+    # entries so the committee sees the full set they uploaded.
+    excluded_held_in_committee_list: List[str] = []
+    missing_from_scored_committee_list: List[str] = []
+    if has_committee_list and committee_list_symbols:
+        already_in_table = set(
+            candidates["Symbol"].astype(str).str.upper().tolist()
+        )
+        held_excluded_set = (
+            {s for s in held_symbols if s not in {original, resolved}}
+            if exclude_already_held_resolved else set()
+        )
+        excluded_held_in_committee_list = sorted(
+            committee_list_symbols & held_excluded_set
+        )
+        # When the caller explicitly opted into filters on top of the
+        # committee list (diagnostic-review path), do NOT back-fill committee
+        # symbols that fail those filters — the user asked for the filter,
+        # they want the row dropped.
+        explicit_ft_filter_active = bool(
+            fund_type_filter and fund_type_filter_source in {
+                "override", "inferred",
+            } and (
+                apply_fund_type_filter is True
+                or fund_type_filter_source == "override"
+            )
+        )
+        explicit_cat_filter_active = bool(
+            category_filter_used and category_filter_source in {
+                "override", "inferred",
+            } and (
+                apply_category_filter is True
+                or category_filter_source == "override"
+            )
+        )
+        scored_lookup: Dict[str, Dict[str, Any]] = {}
+        if explicit_ft_filter_active or explicit_cat_filter_active:
+            scored_view = dual_table.copy()
+            scored_view["Symbol"] = (
+                _ensure_string_symbol(scored_view["Symbol"]).str.upper()
+            )
+            for _, row in scored_view.iterrows():
+                scored_lookup[str(row["Symbol"])] = {
+                    "Fund_Type": row.get("Fund_Type"),
+                    "Category": row.get("Category"),
+                }
+        ft_target = (
+            str(fund_type_filter).strip().lower() if fund_type_filter else None
+        )
+        cat_target = (
+            str(category).strip() if category_filter_used and category else None
+        )
+        missing_from_table: List[str] = []
+        for sym in committee_list_symbols:
+            if sym in already_in_table:
+                continue
+            if sym in {original, resolved}:
+                continue
+            if sym in held_excluded_set:
+                continue
+            if explicit_ft_filter_active and ft_target and sym in scored_lookup:
+                row_ft = scored_lookup[sym].get("Fund_Type")
+                if (
+                    row_ft is not None
+                    and str(row_ft).strip().lower() == ft_target
+                ):
+                    pass  # matches, fall through
+                elif row_ft is None or str(row_ft).strip() == "":
+                    pass  # unknown — leave it visible to staff
+                else:
+                    continue  # filtered out by explicit fund-type filter
+            if explicit_cat_filter_active and cat_target and sym in scored_lookup:
+                row_cat = scored_lookup[sym].get("Category")
+                if (
+                    row_cat is not None
+                    and str(row_cat).strip() == cat_target
+                ):
+                    pass
+                elif row_cat is None or str(row_cat).strip() == "":
+                    pass
+                else:
+                    continue  # filtered out by explicit category filter
+            missing_from_table.append(sym)
+        # Determinism: sort so identical inputs yield identical artifacts.
+        missing_from_table.sort()
+
+        appended_rows: List[Dict[str, Any]] = []
+        next_rank = (len(candidates) + 1) if not candidates.empty else 1
+        for sym in missing_from_table:
+            row: Dict[str, Any] = {col: np.nan for col in CANDIDATE_COLUMNS}
+            row["Rank"] = next_rank
+            next_rank += 1
+            row["Symbol"] = sym
+            row["Name"] = (
+                committee_name_map.get(sym)
+                or candidate_name_overrides.get(sym, "")
+            )
+            row["Already_Held"] = bool(held_lookup.get(sym))
+            row["Held_By_Models"] = ", ".join(held_lookup.get(sym, []))
+            row["From_Uploaded_Universe"] = (
+                candidate_universe_symbols is not None
+                and sym in candidate_universe_symbols
+            )
+            row["From_Committee_List"] = True
+            row["Scored_In_Universe"] = False
+            row["Reason_Label"] = "Committee list — not in scored universe"
+            appended_rows.append(row)
+        if appended_rows:
+            extra = pd.DataFrame(appended_rows, columns=CANDIDATE_COLUMNS)
+            candidates = pd.concat([candidates, extra], ignore_index=True)
+        missing_from_scored_committee_list = list(missing_from_table)
 
     profile = _current_holding_profile(
         dual_table,
@@ -820,6 +1219,19 @@ def build_replacement_workbench(
         model_name=model_name,
     )
 
+    # ``filter_source`` is a single-string roll-up describing why this brief
+    # is filtered the way it is — useful for the printable brief banner.
+    if has_committee_list:
+        filter_source = "committee_list"
+    elif category_filter_used and fund_type_filter:
+        filter_source = "inferred"
+        if category_override or fund_type_filter_source == "override":
+            filter_source = "override"
+    elif fund_type_filter or category_filter_used:
+        filter_source = "partial"
+    else:
+        filter_source = "none"
+
     summary: Dict[str, Any] = {
         "ticker": original,
         "resolved_ticker": resolved,
@@ -828,6 +1240,19 @@ def build_replacement_workbench(
         "category": category,
         "category_source": cat_source,
         "category_override_used": bool(category_override),
+        "inferred_category": category if cat_source != "override" else (
+            _resolve_category(dual_table, resolved, None)[0]
+        ),
+        "inferred_fund_type": inferred_fund_type,
+        "fund_type_filter": fund_type_filter,
+        "fund_type_filter_used": bool(fund_type_filter),
+        "fund_type_filter_source": fund_type_filter_source,
+        "fund_type_override_used": (
+            fund_type_filter_source in {"override", "override_all"}
+        ),
+        "category_filter_used": bool(category_filter_used),
+        "category_filter_source": category_filter_source,
+        "filter_source": filter_source,
         "top_n_requested": int(top_n),
         "candidate_count": int(len(candidates)),
         "already_held_candidate_count": int(candidates["Already_Held"].sum())
@@ -855,9 +1280,26 @@ def build_replacement_workbench(
             if candidate_universe_symbols is not None else None
         ),
         "candidate_universe_source": (
-            "uploaded" if has_candidate_file and restrict_resolved
-            else ("scored" if not restrict_resolved else "uploaded_empty")
+            "committee_list" if has_committee_list and restrict_resolved
+            else (
+                "uploaded" if has_candidate_file and restrict_resolved
+                else (
+                    "scored" if not restrict_resolved
+                    else "uploaded_empty"
+                )
+            )
         ),
+        "committee_list_supplied": bool(has_committee_list),
+        "committee_list_size": (
+            int(len(committee_list_symbols))
+            if committee_list_symbols is not None else None
+        ),
+        "committee_list_excluded_held_symbols": list(
+            excluded_held_in_committee_list
+        ) if has_committee_list else [],
+        "committee_list_missing_from_scored_universe": list(
+            missing_from_scored_committee_list
+        ) if has_committee_list else [],
         "universe_row_count": int(len(dual_table)),
         "category_pool_size": int(len(pool)),
         "held_symbol_count": int(len(held_symbols)),
@@ -965,6 +1407,9 @@ def build_replacement_workbench(
             ).tolist()
             fit_candidates_table["From_Uploaded_Universe"] = (
                 sym_u.isin(candidate_universe_symbols or set()).tolist()
+            )
+            fit_candidates_table["From_Committee_List"] = (
+                sym_u.isin(committee_list_symbols or set()).tolist()
             )
             # Display name resolution: prefer curated Name from
             # candidate_exposures, else fall back to the scored universe.
@@ -1217,9 +1662,13 @@ def run_replacement_for_run(
     benchmark_exposures: Optional[pd.DataFrame] = None,
     benchmark_weights: Optional[Mapping[str, float]] = None,
     candidate_exposures: Optional[pd.DataFrame] = None,
+    candidate_list: Optional[pd.DataFrame] = None,
     candidate_universe_mode: str = "auto",
     restrict_to_candidate_exposures: Optional[bool] = None,
     exclude_already_held: Optional[bool] = None,
+    fund_type_override: Optional[str] = None,
+    apply_fund_type_filter: Optional[bool] = None,
+    apply_category_filter: Optional[bool] = None,
 ) -> Dict[str, Any]:
     """Build + (optionally) persist a workbench for ``ticker`` against the
     archived run at ``run_date``.
@@ -1257,9 +1706,13 @@ def run_replacement_for_run(
         benchmark_exposures=benchmark_exposures,
         benchmark_weights=benchmark_weights,
         candidate_exposures=candidate_exposures,
+        candidate_list=candidate_list,
         candidate_universe_mode=candidate_universe_mode,
         restrict_to_candidate_exposures=restrict_to_candidate_exposures,
         exclude_already_held=exclude_already_held,
+        fund_type_override=fund_type_override,
+        apply_fund_type_filter=apply_fund_type_filter,
+        apply_category_filter=apply_category_filter,
     )
 
     paths: Dict[str, str] = {}
@@ -1293,6 +1746,11 @@ def _cmd_build(args: argparse.Namespace) -> int:
         latest = load_latest_run(runs_dir=runs_dir)
         run_date = latest["run_date"]
 
+    candidate_list_df: Optional[pd.DataFrame] = None
+    if getattr(args, "candidate_list", None):
+        from candidate_list_intake import parse_candidate_list
+        candidate_list_df = parse_candidate_list(args.candidate_list)
+
     bundle = run_replacement_for_run(
         run_date=run_date,
         ticker=args.ticker,
@@ -1303,6 +1761,7 @@ def _cmd_build(args: argparse.Namespace) -> int:
         exclude_held=args.exclude_held,
         persist=not args.dry_run,
         alias_csv_path=args.alias_csv,
+        candidate_list=candidate_list_df,
         candidate_universe_mode=args.candidate_universe_mode,
         exclude_already_held=(
             False if args.include_already_held else None
@@ -1364,6 +1823,12 @@ def _cli() -> None:
     p_build.add_argument(
         "--exclude-held", action="store_true",
         help="Drop candidates already held by any model, rather than flagging.",
+    )
+    p_build.add_argument(
+        "--candidate-list", default=None,
+        help="Optional CSV of the committee candidate list (Symbol/Ticker/"
+             "Fund Symbol/Candidate Symbol header). When supplied this is "
+             "the authoritative candidate universe for the brief.",
     )
     p_build.add_argument(
         "--candidate-universe-mode",

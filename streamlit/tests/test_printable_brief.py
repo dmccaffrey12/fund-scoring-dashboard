@@ -74,13 +74,17 @@ def _dual_table() -> pd.DataFrame:
     ])
 
 
-def _make_result_for_prblx() -> ReplacementResult:
+def _make_result_for_prblx(*, apply_fund_type_filter=False) -> ReplacementResult:
+    # Default to disabling the inferred fund-type filter so the cross-type
+    # legacy assertions (passive BBB ranked alongside active CCC/DDD) keep
+    # holding. Tests that want to exercise the new default opt back in.
     return build_replacement_workbench(
         _dual_table(),
         "PRBLX",
         top_n=10,
         alias_map={},
         run_date="2026-04-30",
+        apply_fund_type_filter=apply_fund_type_filter,
     )
 
 
@@ -159,6 +163,7 @@ def test_html_escapes_potentially_unsafe_characters():
     dt.loc[dt["Symbol"] == "BBB", "Name"] = '<script>alert("x")</script> & co'
     result = build_replacement_workbench(
         dt, "PRBLX", top_n=10, alias_map={}, run_date="2026-04-30",
+        apply_fund_type_filter=False,
     )
     out = render_printable_brief_html(result)
     assert "<script>alert" not in out
