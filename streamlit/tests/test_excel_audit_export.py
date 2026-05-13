@@ -40,10 +40,12 @@ from excel_audit_export import (  # noqa: E402
     SHEET_ACTION_CHANGES,
     SHEET_NEW_FUNDS,
     SHEET_REMOVED_FUNDS,
+    StaleScoreArchiveError,
     _default_workbook_path,
     build_audit_workbook,
     export_latest_run,
     export_run,
+    validate_score_bounds,
 )
 
 EXCEL_ERRORS = {"#REF!", "#NAME?", "#VALUE!", "#DIV/0!", "#N/A", "#NULL!", "#NUM!"}
@@ -279,6 +281,51 @@ def test_build_audit_workbook_accepts_explicit_out_path():
         assert os.path.isfile(custom)
 
 
+def test_validate_score_bounds_passes_on_clean_table():
+    table = _synthetic_table()
+    validate_score_bounds(table)  # must not raise
+
+
+def test_validate_score_bounds_flags_passive_over_100():
+    table = _synthetic_table()
+    table.loc[0, "Score_2025_Final"] = 109.0
+    try:
+        validate_score_bounds(table)
+    except StaleScoreArchiveError as exc:
+        msg = str(exc)
+        assert "Score_2025_Final" in msg
+        assert "109" in msg
+        assert "overwrite" in msg.lower()
+    else:
+        raise AssertionError("Expected StaleScoreArchiveError, got none")
+
+
+def test_validate_score_bounds_flags_2023_over_100():
+    table = _synthetic_table()
+    table.loc[2, "Score_2023_Final"] = 115.0
+    try:
+        validate_score_bounds(table)
+    except StaleScoreArchiveError as exc:
+        assert "Score_2023_Final" in str(exc)
+    else:
+        raise AssertionError("Expected StaleScoreArchiveError, got none")
+
+
+def test_build_audit_workbook_refuses_stale_archive():
+    """If an archived CSV has scores >100 (e.g. pre-PR #21), the export must
+    refuse rather than ship a misleading workbook."""
+    table = _synthetic_table()
+    table.loc[0, "Score_2025_Final"] = 108.5
+    with tempfile.TemporaryDirectory() as tmp:
+        create_run_archive(run_date="2026-04-10", runs_dir=tmp, table=table)
+        try:
+            export_run(run_date="2026-04-10", runs_dir=tmp)
+        except StaleScoreArchiveError as exc:
+            assert "108" in str(exc) or "Score_2025_Final" in str(exc)
+        else:
+            raise AssertionError("Expected StaleScoreArchiveError, got none")
+
+
 def main() -> int:
     funcs = [
         test_build_workbook_has_expected_base_sheets,
@@ -291,6 +338,10 @@ def main() -> int:
         test_comparison_sheets_emitted_when_comparison_exists,
         test_no_comparison_flag_skips_comparison_sheets,
         test_build_audit_workbook_accepts_explicit_out_path,
+        test_validate_score_bounds_passes_on_clean_table,
+        test_validate_score_bounds_flags_passive_over_100,
+        test_validate_score_bounds_flags_2023_over_100,
+        test_build_audit_workbook_refuses_stale_archive,
     ]
     failed = 0
     for fn in funcs:

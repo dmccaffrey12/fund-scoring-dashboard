@@ -173,6 +173,56 @@ def test_find_packet_html_optional():
     assert result is None or result.endswith(".html")
 
 
+def test_check_archive_score_bounds_clean_archive_returns_none():
+    table = _synthetic_table()
+    with tempfile.TemporaryDirectory() as tmp:
+        create_run_archive(run_date="2026-04-30", runs_dir=tmp, table=table)
+        assert workflow_ui.check_archive_score_bounds(
+            "2026-04-30", runs_dir=tmp,
+        ) is None
+
+
+def test_check_archive_score_bounds_stale_archive_returns_message():
+    """Simulates a pre-PR #21 archive with Passive scores above 100."""
+    table = _synthetic_table()
+    table.loc[0, "Score_2025_Final"] = 109.0
+    with tempfile.TemporaryDirectory() as tmp:
+        create_run_archive(run_date="2026-04-30", runs_dir=tmp, table=table)
+        msg = workflow_ui.check_archive_score_bounds(
+            "2026-04-30", runs_dir=tmp,
+        )
+        assert msg is not None
+        assert "Score_2025_Final" in msg
+        assert "overwrite" in msg.lower()
+
+
+def test_check_archive_score_bounds_missing_archive_returns_none():
+    with tempfile.TemporaryDirectory() as tmp:
+        assert workflow_ui.check_archive_score_bounds(
+            "2099-01-01", runs_dir=tmp,
+        ) is None
+
+
+def test_build_audit_workbook_bytes_refuses_stale_archive():
+    """Stale archives (scores >100) must not produce a workbook."""
+    from excel_audit_export import StaleScoreArchiveError
+
+    table = _synthetic_table()
+    table.loc[0, "Score_2025_Final"] = 111.0
+    with tempfile.TemporaryDirectory() as tmp:
+        create_run_archive(run_date="2026-04-30", runs_dir=tmp, table=table)
+        try:
+            workflow_ui.build_audit_workbook_bytes(
+                run_date="2026-04-30",
+                runs_dir=tmp,
+                include_comparison=False,
+            )
+        except StaleScoreArchiveError:
+            pass
+        else:
+            raise AssertionError("Expected StaleScoreArchiveError, got none")
+
+
 if __name__ == "__main__":
     # Allow running as a plain script too.
     test_persist_uploads_round_trip()
@@ -183,4 +233,8 @@ if __name__ == "__main__":
     test_maybe_compare_returns_result_with_two_runs()
     test_build_audit_workbook_bytes()
     test_find_packet_html_optional()
+    test_check_archive_score_bounds_clean_archive_returns_none()
+    test_check_archive_score_bounds_stale_archive_returns_message()
+    test_check_archive_score_bounds_missing_archive_returns_none()
+    test_build_audit_workbook_bytes_refuses_stale_archive()
     print("ok")

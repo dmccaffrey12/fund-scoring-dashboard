@@ -67,6 +67,52 @@ TOP_N = 50
 
 WORKBOOK_SCHEMA_VERSION = "1.0"
 
+# Both 2023 and 2025 systems produce 0-100 scores by construction. Anything
+# above this in an archived dual_score_table.csv means the archive was
+# generated under a buggy scoring engine (e.g. pre-PR #21 Passive rescale)
+# and must be regenerated before it is shipped to the committee.
+SCORE_UPPER_BOUND = 100.0
+_SCORE_BOUND_COLS = ("Score_2023_Final", "Score_2025_Final")
+
+
+class StaleScoreArchiveError(ValueError):
+    """Raised when an archive contains scores outside the 0-100 invariant.
+
+    The audit workbook refuses to render in this case because the most
+    likely cause is a stale archive produced by an older scoring engine
+    (see PR #21, which removed the Passive rescale). The fix is to
+    re-create the archive for the same run date with ``overwrite=True``.
+    """
+
+
+def validate_score_bounds(table: "pd.DataFrame") -> None:
+    """Raise StaleScoreArchiveError if any final score exceeds 100.
+
+    Both 2023 and 2025 systems are constructed to produce 0-100 scores.
+    A value >100 in a loaded archive almost always means the CSV on disk
+    predates the PASSIVE_RESCALE fix and needs to be regenerated.
+    """
+    offenders = []
+    for col in _SCORE_BOUND_COLS:
+        if col not in table.columns:
+            continue
+        series = table[col].dropna()
+        if series.empty:
+            continue
+        maximum = float(series.max())
+        if maximum > SCORE_UPPER_BOUND:
+            count = int((series > SCORE_UPPER_BOUND).sum())
+            offenders.append(f"{col}: {count} value(s) > 100 (max={maximum:.4f})")
+    if offenders:
+        raise StaleScoreArchiveError(
+            "Archived scores violate the 0-100 invariant: "
+            + "; ".join(offenders)
+            + ". This usually means the archive was created before the "
+            "Passive-rescale fix. Re-create the run archive for this date "
+            "with overwrite=True (Monthly Workflow → check 'Overwrite if "
+            "run exists' → Create Run Archive) and rebuild the workbook."
+        )
+
 # Excel enforces 31-char sheet names and disallows some punctuation; keep
 # our names short and plain ASCII so they survive a round-trip through
 # legacy Windows Explorer / SharePoint.
@@ -672,6 +718,8 @@ def build_audit_workbook(
         raise ValueError("run dict is missing a 'table' DataFrame")
     if not isinstance(table, pd.DataFrame):
         raise TypeError("run['table'] must be a pandas DataFrame")
+
+    validate_score_bounds(table)
 
     run_date = run.get("run_date") or (run.get("metadata") or {}).get("run_date") or "unknown"
     run_path = run.get("path")
