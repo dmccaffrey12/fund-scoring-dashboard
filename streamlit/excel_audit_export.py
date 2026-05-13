@@ -525,7 +525,7 @@ def _write_methodology(ws: Worksheet) -> None:
         ("Quadrants", "Q1 Both Strong: both >= 80.  Q2 Only 2025: 2025 >= 80, 2023 < 80.  Q3 Only 2023: 2023 >= 80, 2025 < 80.  Q4 Both Weak: everything else."),
         ("Action flags", "LEAD: both STRONG.  REVIEW: one STRONG.  WATCH: borderline / REVIEW / REVIEW.  DROP: both WEAK."),
         ("Consensus rank", "Dense rank on the average of Rank_2023 and Rank_2025 (1 = best)."),
-        ("Validation targets", "SCHD ~69.6 (Passive). OMCIX ~68.7 (Active). Workbook matches the canonical engine within +/- 0.1."),
+        ("Validation targets", "OMCIX ~68.7 (Active). Workbook matches the canonical engine within +/- 0.1. Note: prior Passive validation target (SCHD ~69.6) was based on a now-removed 1.111 rescale that allowed Passive scores >100; both systems now produce 0-100 scores using the same available-weight normalization."),
         ("Excel 2019 compatibility", "No XLOOKUP / LET / FILTER / SORT / UNIQUE / SEQUENCE are used. All values are precomputed. Tables use the legacy ListObject format that ships with Excel 2007+."),
     ]
     for r, (label, value) in enumerate(rows, start=3):

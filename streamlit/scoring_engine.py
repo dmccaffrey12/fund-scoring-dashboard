@@ -4,8 +4,14 @@ Fund Scoring Engine
 Calculates percentile-based scores for passive and active funds within their
 Morningstar category peer group.
 
-Passive system: 10 metrics, 90 raw points, rescaled *1.111 → 100-point scale
-Active system:  16 metrics, 100 raw points
+Both systems produce scores on the same 0-100 scale: each fund's score is the
+weighted average of its within-category percentile ranks across the system's
+metrics, divided by the sum of weights for metrics with data available. The
+absolute total weight of the system (90 for Passive, 100 for Active) does not
+affect the score's scale — it cancels out in the available-weight denominator.
+
+Passive system: 10 metrics (90 total weight points)
+Active system:  16 metrics (100 total weight points)
 """
 
 import pandas as pd
@@ -47,7 +53,8 @@ CSV_COLUMNS = {
 # Metric Definitions
 # ---------------------------------------------------------------------------
 
-# Passive: 10 metrics totalling 90 raw points — rescaled *1.111 to reach 100
+# Passive: 10 metrics, total weight 90. Score is normalized by available
+# weight, so the resulting 0-100 scale is independent of this total.
 PASSIVE_METRICS = [
     ('expense_ratio',       40, 'lower'),
     ('tracking_error_3y',   10, 'lower'),
@@ -81,7 +88,13 @@ ACTIVE_METRICS = [
     ('upside_10y',        5, 'higher'),
 ]
 
-PASSIVE_RESCALE = 1.111  # 90-point system → 100-point scale
+# PASSIVE_RESCALE is retained at 1.0 for backwards-compatible imports. The
+# weighted-average percentile computation in `_compute_score` already produces
+# a properly bounded 0-100 score (weighted_sum / available_weight is in [0,1]).
+# The historical 1.111 multiplier (intended to map a 90-point raw-score system
+# to a 100-point scale) was incorrect for this normalized formulation and
+# produced Passive scores up to ~111 for top-percentile funds.
+PASSIVE_RESCALE = 1.0
 
 
 # ---------------------------------------------------------------------------
