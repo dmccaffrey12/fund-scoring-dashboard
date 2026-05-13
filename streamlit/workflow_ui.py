@@ -27,7 +27,11 @@ from typing import Any, Dict, Optional, Tuple
 import pandas as pd
 
 from dual_score_table import build_dual_score_table
-from excel_audit_export import export_run
+from excel_audit_export import (
+    StaleScoreArchiveError,
+    export_run,
+    validate_score_bounds,
+)
 from model_holdings_intake import (
     summarize as summarize_model_holdings,
     validate_model_holdings_dataframe,
@@ -135,6 +139,7 @@ def create_archive_from_uploads(
         path_2023=path_2023,
         how="inner",
     )
+    validate_score_bounds(table)
     create_run_archive(
         run_date=run_date,
         runs_dir=runs_dir,
@@ -265,6 +270,28 @@ def maybe_compare(
 # ---------------------------------------------------------------------------
 # Excel audit export
 # ---------------------------------------------------------------------------
+
+def check_archive_score_bounds(
+    run_date: str,
+    runs_dir: str = DEFAULT_RUNS_DIR,
+) -> Optional[str]:
+    """Return None if the archive's scores are within 0-100, else an error
+    string describing the violation.
+
+    Used by the Streamlit UI to flag stale archives (typically left over
+    from before the PR #21 Passive-rescale fix) before the user attempts
+    to export an audit workbook from them.
+    """
+    try:
+        run = load_run(run_date, runs_dir=runs_dir)
+    except FileNotFoundError:
+        return None
+    try:
+        validate_score_bounds(run["table"])
+    except StaleScoreArchiveError as exc:
+        return str(exc)
+    return None
+
 
 def build_audit_workbook_bytes(
     run_date: str,
