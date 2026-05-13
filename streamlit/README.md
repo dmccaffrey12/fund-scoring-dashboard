@@ -57,7 +57,7 @@ Missing data is handled gracefully: weights for missing metrics are excluded fro
 
 ### Scoring Systems
 
-**Passive (10 metrics, 90 raw points → rescaled ×1.111)**
+**Passive (10 metrics, total weight 90 → normalized 0-100 by available weight)**
 
 | Metric | Weight | Direction |
 |--------|--------|-----------|

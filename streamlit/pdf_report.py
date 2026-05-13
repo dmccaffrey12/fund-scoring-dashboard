@@ -341,7 +341,7 @@ def _cover_page(pdf: FundReport, scored_df: pd.DataFrame, title: str):
     overview = (
         "Funds are scored within their Morningstar category peer group using a percentile-based system. "
         "Passive (index) funds are scored on 10 metrics (expense ratio 40%, tracking error 30%, "
-        "R-squared 5%, AUM 7%, downside/drawdown 9%), rescaled to a 100-point scale. "
+        "R-squared 5%, AUM 7%, downside/drawdown 9%) on a 0-100 scale. "
         "Active funds are scored on 16 metrics (expense ratio 25%, information ratio 20%, "
         "Sortino ratio 20%, downside protection 20%, upside capture 11%, returns 4%). "
         "Score bands: STRONG >=80, REVIEW 60-79, WEAK <60."
@@ -482,7 +482,7 @@ def _methodology_page(pdf: FundReport):
     # Passive weight table
     pdf.set_font("Helvetica", "B", 9)
     pdf.set_text_color(*NAVY)
-    pdf.cell(0, 6, "Passive System (10 metrics, rescaled ×1.111 to 100)", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+    pdf.cell(0, 6, "Passive System (10 metrics, 0-100 scale)", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
 
     p_headers = ["Metric", "Weight (raw pts)", "Direction"]
     p_widths = [90, 38, 38]
