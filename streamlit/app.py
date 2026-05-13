@@ -2132,10 +2132,8 @@ elif page == "Monthly Workflow":
     _existing_runs = workflow_ui.available_runs()
     if run_date in _existing_runs and not overwrite:
         st.warning(
-            f"An archive already exists for `{run_date}`. Creating a new "
-            "archive will fail unless **Overwrite if run exists** is checked. "
-            "If you re-ran scoring after a code fix (e.g. PR #21 Passive "
-            "rescale), check Overwrite so the stale archive is replaced.",
+            f"An archive already exists for `{run_date}`. Check "
+            "**Overwrite if run exists** to replace it.",
             icon="⚠️",
         )
 
@@ -3313,10 +3311,7 @@ elif page == "Monthly Workflow":
         )
         stale_msg = workflow_ui.check_archive_score_bounds(export_date)
         if stale_msg:
-            st.error(
-                f"This archive cannot be exported as-is: {stale_msg}",
-                icon="⚠️",
-            )
+            st.error(stale_msg, icon="⚠️")
         if st.button(
             "Build Audit Workbook",
             key="mw_btn_xlsx",

@@ -183,7 +183,7 @@ def test_check_archive_score_bounds_clean_archive_returns_none():
 
 
 def test_check_archive_score_bounds_stale_archive_returns_message():
-    """Simulates a pre-PR #21 archive with Passive scores above 100."""
+    """An archive with scores above 100 must surface a remediation message."""
     table = _synthetic_table()
     table.loc[0, "Score_2025_Final"] = 109.0
     with tempfile.TemporaryDirectory() as tmp:
