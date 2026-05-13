@@ -276,12 +276,7 @@ def check_archive_score_bounds(
     runs_dir: str = DEFAULT_RUNS_DIR,
 ) -> Optional[str]:
     """Return None if the archive's scores are within 0-100, else an error
-    string describing the violation.
-
-    Used by the Streamlit UI to flag stale archives (typically left over
-    from before the PR #21 Passive-rescale fix) before the user attempts
-    to export an audit workbook from them.
-    """
+    string describing the violation."""
     try:
         run = load_run(run_date, runs_dir=runs_dir)
     except FileNotFoundError:

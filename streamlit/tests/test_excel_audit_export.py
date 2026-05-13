@@ -312,8 +312,8 @@ def test_validate_score_bounds_flags_2023_over_100():
 
 
 def test_build_audit_workbook_refuses_stale_archive():
-    """If an archived CSV has scores >100 (e.g. pre-PR #21), the export must
-    refuse rather than ship a misleading workbook."""
+    """If an archived CSV has scores >100, the export must refuse rather than
+    ship a workbook that violates the 0-100 invariant."""
     table = _synthetic_table()
     table.loc[0, "Score_2025_Final"] = 108.5
     with tempfile.TemporaryDirectory() as tmp:

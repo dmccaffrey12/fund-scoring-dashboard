@@ -141,8 +141,9 @@ Reference scores from the Excel workbook:
 
 | Fund | Type | Expected Score |
 |------|------|----------------|
-| SCHD | Passive | ~69.6 |
 | OMCIX | Active | ~68.7 |
+
+Both Active and Passive scores are bounded to 0-100 by available-weight normalization.
 
 To verify:
 
@@ -153,10 +154,7 @@ from scoring_engine import score_funds
 df = pd.read_csv('sample_data.csv')
 scored = score_funds(df)
 
-schd = scored[scored['Symbol'] == 'SCHD']
 omcix = scored[scored['Symbol'] == 'OMCIX']
-
-print(f"SCHD  Score: {schd['Score_Final'].values[0]:.1f}  (expected ~69.6, Passive)")
 print(f"OMCIX Score: {omcix['Score_Final'].values[0]:.1f}  (expected ~68.7, Active)")
 ```
 

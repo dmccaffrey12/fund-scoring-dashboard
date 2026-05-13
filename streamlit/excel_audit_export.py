@@ -67,31 +67,16 @@ TOP_N = 50
 
 WORKBOOK_SCHEMA_VERSION = "1.0"
 
-# Both 2023 and 2025 systems produce 0-100 scores by construction. Anything
-# above this in an archived dual_score_table.csv means the archive was
-# generated under a buggy scoring engine (e.g. pre-PR #21 Passive rescale)
-# and must be regenerated before it is shipped to the committee.
 SCORE_UPPER_BOUND = 100.0
 _SCORE_BOUND_COLS = ("Score_2023_Final", "Score_2025_Final")
 
 
 class StaleScoreArchiveError(ValueError):
-    """Raised when an archive contains scores outside the 0-100 invariant.
-
-    The audit workbook refuses to render in this case because the most
-    likely cause is a stale archive produced by an older scoring engine
-    (see PR #21, which removed the Passive rescale). The fix is to
-    re-create the archive for the same run date with ``overwrite=True``.
-    """
+    """Raised when an archive contains scores outside the 0-100 invariant."""
 
 
 def validate_score_bounds(table: "pd.DataFrame") -> None:
-    """Raise StaleScoreArchiveError if any final score exceeds 100.
-
-    Both 2023 and 2025 systems are constructed to produce 0-100 scores.
-    A value >100 in a loaded archive almost always means the CSV on disk
-    predates the PASSIVE_RESCALE fix and needs to be regenerated.
-    """
+    """Raise StaleScoreArchiveError if any final score exceeds 100."""
     offenders = []
     for col in _SCORE_BOUND_COLS:
         if col not in table.columns:
@@ -105,12 +90,9 @@ def validate_score_bounds(table: "pd.DataFrame") -> None:
             offenders.append(f"{col}: {count} value(s) > 100 (max={maximum:.4f})")
     if offenders:
         raise StaleScoreArchiveError(
-            "Archived scores violate the 0-100 invariant: "
+            "Archive contains invalid scores ("
             + "; ".join(offenders)
-            + ". This usually means the archive was created before the "
-            "Passive-rescale fix. Re-create the run archive for this date "
-            "with overwrite=True (Monthly Workflow → check 'Overwrite if "
-            "run exists' → Create Run Archive) and rebuild the workbook."
+            + "). Overwrite and recreate the archive before exporting."
         )
 
 # Excel enforces 31-char sheet names and disallows some punctuation; keep
@@ -571,7 +553,7 @@ def _write_methodology(ws: Worksheet) -> None:
         ("Quadrants", "Q1 Both Strong: both >= 80.  Q2 Only 2025: 2025 >= 80, 2023 < 80.  Q3 Only 2023: 2023 >= 80, 2025 < 80.  Q4 Both Weak: everything else."),
         ("Action flags", "LEAD: both STRONG.  REVIEW: one STRONG.  WATCH: borderline / REVIEW / REVIEW.  DROP: both WEAK."),
         ("Consensus rank", "Dense rank on the average of Rank_2023 and Rank_2025 (1 = best)."),
-        ("Validation targets", "OMCIX ~68.7 (Active). Workbook matches the canonical engine within +/- 0.1. Note: prior Passive validation target (SCHD ~69.6) was based on a now-removed 1.111 rescale that allowed Passive scores >100; both systems now produce 0-100 scores using the same available-weight normalization."),
+        ("Validation targets", "OMCIX ~68.7 (Active). Workbook matches the canonical engine within +/- 0.1. Both Active and Passive scores are bounded to 0-100 by the available-weight normalization."),
         ("Excel 2019 compatibility", "No XLOOKUP / LET / FILTER / SORT / UNIQUE / SEQUENCE are used. All values are precomputed. Tables use the legacy ListObject format that ships with Excel 2007+."),
     ]
     for r, (label, value) in enumerate(rows, start=3):

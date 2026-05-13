@@ -583,8 +583,8 @@ workbench end-to-end on Streamlit Cloud without it.
 | **Replacement Workbench** | **One ticker at a time** | **"I need to replace PRBLX — give me a short list"** |
 
 ## Validation Targets
-- SCHD (Passive): ~69.6
 - OMCIX (Active): ~68.7
+- Both Active and Passive scores are bounded to 0-100 by available-weight normalization
 - Matches Excel workbook scoring within ±0.1 points
 
 ---
