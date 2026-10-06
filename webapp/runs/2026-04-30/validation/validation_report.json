@@ -1,0 +1,32 @@
+{
+  "rowCount": 3794,
+  "joinedCount": 3794,
+  "missingScore2023": 0,
+  "missingScore2025": 0,
+  "bandCounts2023": {
+    "STRONG": 93,
+    "REVIEW": 884,
+    "WEAK": 2817
+  },
+  "bandCounts2025": {
+    "STRONG": 393,
+    "REVIEW": 890,
+    "WEAK": 2511
+  },
+  "quadrantCounts": {
+    "Q1_Both_Strong": 24,
+    "Q2_Only_2025": 369,
+    "Q3_Only_2023": 69,
+    "Q4_Both_Weak": 3332
+  },
+  "actionFlagCounts": {
+    "LEAD": 24,
+    "REVIEW": 438,
+    "WATCH": 1156,
+    "DROP": 2176
+  },
+  "fundTypeCounts": {
+    "Active": 2749,
+    "Passive": 1045
+  }
+}

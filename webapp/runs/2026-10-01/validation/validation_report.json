@@ -1,0 +1,21 @@
+{
+  "rowCount": 1,
+  "joinedCount": 1,
+  "missingScore2023": 0,
+  "missingScore2025": 0,
+  "bandCounts2023": {
+    "STRONG": 1
+  },
+  "bandCounts2025": {
+    "STRONG": 1
+  },
+  "quadrantCounts": {
+    "Q1_Both_Strong": 1
+  },
+  "actionFlagCounts": {
+    "LEAD": 1
+  },
+  "fundTypeCounts": {
+    "Passive": 1
+  }
+}

@@ -1,0 +1,11 @@
+{
+  "runDate": "2026-04-30",
+  "createdAt": "2026-10-06T23:50:40.314Z",
+  "scoreSystemVersion": "dual-2023-combined+2025-split",
+  "rowCount": 3794,
+  "joinedCount": 3794,
+  "inputHashes": {
+    "hash2025": "b51bcf3b7420e633f2d5183607f0e6fb6bac00ca40f8a2870b39d5e26989be6b",
+    "hash2023": "9880c3e08bdc805dc78cbc527721b5f8c3b6bea4ea015399aaa3b2042fb2e52b"
+  }
+}
