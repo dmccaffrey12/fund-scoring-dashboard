@@ -73,6 +73,7 @@ export default function FundLookup() {
   const radarData = breakdown?.filter((b: any) => b.percentile !== null).map((b: any) => ({
     metric: b.label,
     percentile: b.percentile,
+    categoryMedian: 50,
     fullMark: 100,
   })) || [];
 
@@ -133,10 +134,34 @@ export default function FundLookup() {
                 <p className="text-xs text-muted-foreground text-center truncate">{fund.name}</p>
                 <p className="text-[11px] text-muted-foreground text-center">{fund.categoryName}</p>
               </CardHeader>
-              <CardContent className="p-4">
+              <CardContent className="p-4 space-y-3">
                 <ScoreGauge score={fund.score || 0} band={fund.scoreBand || "WEAK"} />
-                <div className="mt-3 text-center">
-                  <p className="text-xs text-muted-foreground">
+                <div className="space-y-1.5 text-center text-xs">
+                  <div className="flex justify-between items-center px-2 py-1 bg-muted/30 rounded">
+                    <span className="text-muted-foreground">Consensus Rank:</span>
+                    <span className="font-mono font-bold text-foreground">#{fund.consensusRank ?? "—"}</span>
+                  </div>
+                  <div className="flex justify-between items-center px-2 py-1 bg-muted/30 rounded">
+                    <span className="text-muted-foreground">2023 Legacy Score:</span>
+                    <span className="font-mono font-semibold text-foreground">{fund.score2023?.toFixed(1) ?? "—"}</span>
+                  </div>
+                  <div className="flex justify-between items-center px-2 py-1 bg-muted/30 rounded">
+                    <span className="text-muted-foreground">Score Gap (&Delta;):</span>
+                    <span className="font-mono font-bold">
+                      {fund.scoreGap !== null && fund.scoreGap !== undefined
+                        ? (fund.scoreGap > 0 ? `+${fund.scoreGap.toFixed(1)}` : fund.scoreGap.toFixed(1))
+                        : "—"}
+                    </span>
+                  </div>
+                  <div className="flex justify-between items-center px-2 py-1 bg-muted/30 rounded">
+                    <span className="text-muted-foreground">Quadrant:</span>
+                    <span className="font-mono text-[10px] font-semibold">{fund.quadrant || "—"}</span>
+                  </div>
+                  <div className="flex justify-between items-center px-2 py-1 bg-muted/30 rounded">
+                    <span className="text-muted-foreground">Action Flag:</span>
+                    <span className="font-mono text-[10px] font-bold text-primary">{fund.actionFlag || "—"}</span>
+                  </div>
+                  <p className="text-[11px] text-muted-foreground pt-1">
                     Category Percentile: <span className="font-mono font-medium text-foreground">{fund.categoryPercentile?.toFixed(0)}%</span>
                   </p>
                 </div>
@@ -146,13 +171,16 @@ export default function FundLookup() {
             {/* Radar Chart */}
             <Card className="bg-card border-card-border lg:col-span-2">
               <CardHeader className="pb-0 px-4 pt-4">
-                <CardTitle className="text-sm font-medium">Scoring Breakdown</CardTitle>
+                <CardTitle className="text-sm font-medium flex items-center justify-between">
+                  <span>Scoring Breakdown "Web"</span>
+                  <span className="text-xs text-muted-foreground font-normal">Fund vs. 50% Category Median Ring</span>
+                </CardTitle>
               </CardHeader>
               <CardContent className="p-2">
                 {radarData.length > 0 ? (
                   <ResponsiveContainer width="100%" height={280}>
                     <RadarChart data={radarData} outerRadius="70%">
-                      <PolarGrid stroke="hsl(var(--border))" />
+                      <PolarGrid stroke="hsl(var(--border))" strokeDasharray="3 3" />
                       <PolarAngleAxis
                         dataKey="metric"
                         tick={{ fontSize: 9, fill: "hsl(var(--muted-foreground))" }}
@@ -163,11 +191,20 @@ export default function FundLookup() {
                         tick={{ fontSize: 9, fill: "hsl(var(--muted-foreground))" }}
                       />
                       <Radar
+                        name="Category Median"
+                        dataKey="categoryMedian"
+                        stroke="#94a3b8"
+                        strokeDasharray="4 4"
+                        strokeWidth={1.5}
+                        fill="#94a3b8"
+                        fillOpacity={0.05}
+                      />
+                      <Radar
                         name="Percentile"
                         dataKey="percentile"
                         stroke="hsl(var(--primary))"
                         fill="hsl(var(--primary))"
-                        fillOpacity={0.2}
+                        fillOpacity={0.25}
                         strokeWidth={2}
                       />
                       <Tooltip

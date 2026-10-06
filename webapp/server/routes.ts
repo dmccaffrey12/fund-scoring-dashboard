@@ -1,15 +1,38 @@
 import type { Express } from "express";
 import { createServer, type Server } from "http";
 import { storage } from "./storage";
-import { scoreAllFunds, getFundBreakdown } from "./scoring";
+import {
+  scoreAllFunds,
+  getFundBreakdown,
+  score2023Funds,
+  buildDualScoreTable,
+  type DualScoreRow,
+} from "./scoring";
 import { generatePdfReport } from "./pdf-report";
+import { generateAuditWorkbook } from "./excelExport";
+import {
+  saveRunArchive,
+  listRunArchives,
+  loadRunDualTable,
+  loadLatestRunDate,
+  computeSHA256,
+  buildValidationSummary,
+} from "./runArchive";
+import { validateYChartsCSV } from "./intake";
+import {
+  buildReplacementWorkbench,
+  renderReplacementBriefHtml,
+} from "./replacementWorkbench";
 import multer from "multer";
 import Papa from "papaparse";
 import fs from "fs";
 import path from "path";
+import os from "os";
 import type { InsertFund } from "@shared/schema";
 
-const upload = multer({ dest: "/tmp/uploads/" });
+const uploadDir = path.join(os.tmpdir(), "fundscore_uploads");
+fs.mkdirSync(uploadDir, { recursive: true });
+const upload = multer({ dest: uploadDir });
 
 function parseCSVRow(row: any): InsertFund {
   const parseNum = (val: any): number | null => {
@@ -50,43 +73,110 @@ function parseCSVRow(row: any): InsertFund {
     score: null,
     scoreBand: null,
     categoryPercentile: null,
+    score2023: null,
+    score2025: null,
+    scoreGap: null,
+    rank2023: null,
+    rank2025: null,
+    consensusRank: null,
+    scoreBand2023: null,
+    scoreBand2025: null,
+    quadrant: null,
+    actionFlag: null,
+    primaryDriver: null,
+    dataCoverage2023: null,
+    dataCoverage2025: null,
     uploadBatchId: null,
   };
 }
 
-function seedIfEmpty() {
+export function seedIfEmpty() {
   const allFunds = storage.getAllFunds();
-  if (allFunds.length > 0) return;
-
-  // Try multiple possible paths for the seed CSV
-  const possiblePaths = [
-    path.join(process.cwd(), "server", "data", "seed.csv"),
-    path.resolve("server", "data", "seed.csv"),
-    path.resolve("data", "seed.csv"),
-  ];
-  const csvPath = possiblePaths.find(p => fs.existsSync(p)) || null;
-  
-  if (!csvPath) {
-    console.log("No seed CSV found, skipping seed.");
+  const hasDualScores = allFunds.some(f => f.score2025 !== null && f.score2023 !== null);
+  if (allFunds.length > 0 && hasDualScores) {
+    console.log(`Database already seeded with ${allFunds.length} funds and dual scores.`);
     return;
   }
 
-  console.log("Seeding database from CSV...");
-  const csvText = fs.readFileSync(csvPath, "utf-8");
-  const parsed = Papa.parse(csvText, { header: true, skipEmptyLines: true });
-  
-  const fundRows: InsertFund[] = parsed.data
-    .map((row: any) => parseCSVRow(row))
-    .filter((f: InsertFund) => f.symbol && f.name);
+  // Find 2025 CSV path
+  const seed2025Paths = [
+    path.join(process.cwd(), "server", "data", "seed.csv"),
+    path.resolve("server", "data", "seed.csv"),
+    path.resolve("data", "seed.csv"),
+    path.resolve("..", "streamlit", "sample_data.csv"),
+  ];
+  const csv2025Path = seed2025Paths.find(p => fs.existsSync(p)) || null;
 
-  storage.insertFunds(fundRows);
+  // Find 2023 CSV path
+  const seed2023Paths = [
+    path.join(process.cwd(), "server", "data", "scores_2023.csv"),
+    path.resolve("server", "data", "scores_2023.csv"),
+    path.resolve("data", "scores_2023.csv"),
+    path.resolve("..", "streamlit", "scores_2023.csv"),
+  ];
+  const csv2023Path = seed2023Paths.find(p => fs.existsSync(p)) || null;
 
-  // Score all funds
-  const allFundsAfterInsert = storage.getAllFunds();
-  const scores = scoreAllFunds(allFundsAfterInsert);
-  storage.updateFundScores(scores);
+  if (!csv2025Path) {
+    console.log("No 2025 seed CSV found, skipping seed.");
+    return;
+  }
 
-  console.log(`Seeded and scored ${scores.length} funds.`);
+  console.log("Seeding database and calculating dual scores...");
+
+  // 1. Insert 2025 funds if not already present
+  let currentFunds = storage.getAllFunds();
+  if (currentFunds.length === 0) {
+    const csv2025Text = fs.readFileSync(csv2025Path, "utf-8");
+    const parsed2025 = Papa.parse(csv2025Text, { header: true, skipEmptyLines: true });
+    const fundRows: InsertFund[] = parsed2025.data
+      .map((row: any) => parseCSVRow(row))
+      .filter((f: InsertFund) => f.symbol && f.name);
+
+    storage.insertFunds(fundRows);
+    currentFunds = storage.getAllFunds();
+    console.log(`Inserted ${currentFunds.length} funds into database.`);
+  }
+
+  // 2. Score 2025 funds
+  const scored2025 = scoreAllFunds(currentFunds);
+  storage.updateFundScores(scored2025);
+  console.log(`Computed 2025 scores for ${scored2025.length} funds.`);
+
+  // 3. Score 2023 funds and build Dual-Score Table if 2023 data exists
+  if (csv2023Path) {
+    const csv2023Text = fs.readFileSync(csv2023Path, "utf-8");
+    const parsed2023 = Papa.parse(csv2023Text, { header: true, dynamicTyping: true, skipEmptyLines: true });
+    const scored2023 = score2023Funds(parsed2023.data as any[]);
+    console.log(`Computed 2023 scores for ${scored2023.length} funds.`);
+
+    const dualTable = buildDualScoreTable(scored2025, scored2023, "inner");
+    storage.updateFundDualScores(dualTable);
+    console.log(`Updated dual score table for ${dualTable.length} funds.`);
+
+    // Save baseline run archive
+    const runDate = "2026-04-30";
+    const hash2025 = computeSHA256(fs.readFileSync(csv2025Path));
+    const hash2023 = computeSHA256(fs.readFileSync(csv2023Path));
+    const archiveResult = saveRunArchive(runDate, dualTable, { hash2025, hash2023 });
+
+    // Record in scoring_runs if not already present
+    const existingRuns = storage.getScoringRuns();
+    if (!existingRuns.some(r => r.runDate === runDate)) {
+      storage.createScoringRun({
+        runDate,
+        label: "April 2026 Baseline Committee Run",
+        createdAt: new Date().toISOString(),
+        rowCount: dualTable.length,
+        joinedCount: archiveResult.validation.joinedCount,
+        hash2025,
+        hash2023,
+        validationJson: JSON.stringify(archiveResult.validation),
+      });
+      console.log(`Created baseline scoring run: ${runDate}`);
+    }
+  }
+
+  console.log("Database seed & dual scoring completed successfully.");
 }
 
 export async function registerRoutes(
@@ -94,20 +184,325 @@ export async function registerRoutes(
   app: Express
 ): Promise<Server> {
   // Seed on startup
-  seedIfEmpty();
+  try {
+    seedIfEmpty();
+  } catch (err) {
+    console.error("Error during seed initialization:", err);
+  }
+
+  // ============ SYSTEM HEALTH ============
+  app.get("/api/health", (_req, res) => {
+    const allFunds = storage.getAllFunds();
+    const scoredFunds = allFunds.filter(f => f.score !== null);
+    const dualScoredFunds = allFunds.filter(f => f.score2025 !== null && f.score2023 !== null);
+    const runs = storage.getScoringRuns();
+
+    res.json({
+      status: "ok",
+      timestamp: new Date().toISOString(),
+      databasePath: process.env.DATABASE_PATH || "data.db",
+      totalFunds: allFunds.length,
+      scoredFunds: scoredFunds.length,
+      dualScoredFunds: dualScoredFunds.length,
+      scoringRunsCount: runs.length,
+      nodeVersion: process.version,
+      environment: process.env.NODE_ENV || "development",
+    });
+  });
+
+  // ============ COMMITTEE AUDIT SUITE ============
+  app.get("/api/audit-table", (req, res) => {
+    const allFunds = storage.getAllFunds();
+    const scored = allFunds.filter(f => f.score2025 !== null && f.score2023 !== null);
+
+    // Build DualScoreRow array from storage
+    const allDualRows: DualScoreRow[] = scored.map(f => ({
+      Symbol: f.symbol,
+      Name: f.name,
+      Category: f.categoryName || "Uncategorized",
+      Fund_Type: f.isIndexFund ? "Passive" : "Active",
+      Score_2023_Final: f.score2023,
+      Score_2025_Final: f.score2025,
+      Score_Gap: f.scoreGap,
+      Rank_2023: f.rank2023,
+      Rank_2025: f.rank2025,
+      Consensus_Rank: f.consensusRank,
+      Score_Band_2023: f.scoreBand2023 as any,
+      Score_Band_2025: f.scoreBand2025 as any,
+      Quadrant: (f.quadrant || "Q4_Both_Weak") as any,
+      Action_Flag: (f.actionFlag || "WATCH") as any,
+      Primary_Driver: f.primaryDriver || "Stable",
+      Data_Coverage_2023: f.dataCoverage2023,
+      Data_Coverage_2025: f.dataCoverage2025,
+    }));
+
+    // Summary statistics over the entire dual universe
+    const q1Count = allDualRows.filter(r => r.Quadrant === "Q1_Both_Strong").length;
+    const q2Count = allDualRows.filter(r => r.Quadrant === "Q2_Only_2025").length;
+    const q3Count = allDualRows.filter(r => r.Quadrant === "Q3_Only_2023").length;
+    const q4Count = allDualRows.filter(r => r.Quadrant === "Q4_Both_Weak").length;
+
+    const leadCount = allDualRows.filter(r => r.Action_Flag === "LEAD").length;
+    const reviewCount = allDualRows.filter(r => r.Action_Flag === "REVIEW").length;
+    const watchCount = allDualRows.filter(r => r.Action_Flag === "WATCH").length;
+    const dropCount = allDualRows.filter(r => r.Action_Flag === "DROP").length;
+
+    const upgradesCount = allDualRows.filter(r => (r.Score_Gap ?? 0) >= 10).length;
+    const downgradesCount = allDualRows.filter(r => (r.Score_Gap ?? 0) <= -10).length;
+    const stableCount = allDualRows.filter(r => Math.abs(r.Score_Gap ?? 0) < 10).length;
+
+    // Optional filtering
+    let filtered = [...allDualRows];
+
+    const category = req.query.category as string | undefined;
+    if (category && category !== "all") {
+      filtered = filtered.filter(r => r.Category === category);
+    }
+
+    const quadrant = req.query.quadrant as string | undefined;
+    if (quadrant && quadrant !== "all") {
+      filtered = filtered.filter(r => r.Quadrant === quadrant);
+    }
+
+    const actionFlag = req.query.actionFlag as string | undefined;
+    if (actionFlag && actionFlag !== "all") {
+      filtered = filtered.filter(r => r.Action_Flag === actionFlag);
+    }
+
+    const fundType = req.query.fundType as string | undefined;
+    if (fundType && fundType !== "all") {
+      filtered = filtered.filter(r => r.Fund_Type.toLowerCase() === fundType.toLowerCase());
+    }
+
+    const search = req.query.search as string | undefined;
+    if (search) {
+      const q = search.toLowerCase();
+      filtered = filtered.filter(r =>
+        r.Symbol.toLowerCase().includes(q) ||
+        r.Name.toLowerCase().includes(q) ||
+        r.Category.toLowerCase().includes(q)
+      );
+    }
+
+    const view = req.query.view as string | undefined;
+    if (view === "top50") {
+      filtered = filtered.slice(0, 50);
+    } else if (view === "disagreements") {
+      filtered = filtered.filter(r => Math.abs(r.Score_Gap ?? 0) >= 10);
+    } else if (view === "q1") {
+      filtered = filtered.filter(r => r.Quadrant === "Q1_Both_Strong");
+    } else if (view === "q2") {
+      filtered = filtered.filter(r => r.Quadrant === "Q2_Only_2025");
+    } else if (view === "q3") {
+      filtered = filtered.filter(r => r.Quadrant === "Q3_Only_2023");
+    } else if (view === "q4") {
+      filtered = filtered.filter(r => r.Quadrant === "Q4_Both_Weak");
+    }
+
+    res.json({
+      rows: filtered,
+      totalCount: allDualRows.length,
+      filteredCount: filtered.length,
+      summary: {
+        totalScored: allDualRows.length,
+        q1Count,
+        q2Count,
+        q3Count,
+        q4Count,
+        leadCount,
+        reviewCount,
+        watchCount,
+        dropCount,
+        upgradesCount,
+        downgradesCount,
+        stableCount,
+      },
+    });
+  });
+
+  // ============ EXCEL AUDIT EXPORT ============
+  app.get("/api/export/audit-excel", async (req, res) => {
+    try {
+      const allFunds = storage.getAllFunds();
+      const scored = allFunds.filter(f => f.score2025 !== null && f.score2023 !== null);
+
+      const dualRows: DualScoreRow[] = scored.map(f => ({
+        Symbol: f.symbol,
+        Name: f.name,
+        Category: f.categoryName || "Uncategorized",
+        Fund_Type: f.isIndexFund ? "Passive" : "Active",
+        Score_2023_Final: f.score2023,
+        Score_2025_Final: f.score2025,
+        Score_Gap: f.scoreGap,
+        Rank_2023: f.rank2023,
+        Rank_2025: f.rank2025,
+        Consensus_Rank: f.consensusRank,
+        Score_Band_2023: f.scoreBand2023 as any,
+        Score_Band_2025: f.scoreBand2025 as any,
+        Quadrant: (f.quadrant || "Q4_Both_Weak") as any,
+        Action_Flag: (f.actionFlag || "WATCH") as any,
+        Primary_Driver: f.primaryDriver || "Stable",
+        Data_Coverage_2023: f.dataCoverage2023,
+        Data_Coverage_2025: f.dataCoverage2025,
+      }));
+
+      const latestRun = storage.getLatestScoringRun();
+      const runDate = req.query.runDate as string || latestRun?.runDate || new Date().toISOString().split("T")[0];
+
+      const validation = buildValidationSummary(dualRows);
+      const buffer = await generateAuditWorkbook(
+        dualRows,
+        {
+          runDate,
+          rowCount: dualRows.length,
+          joinedCount: validation.joinedCount,
+          scoreSystemVersion: "dual-2023-combined+2025-split",
+        },
+        validation
+      );
+
+      res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+      res.setHeader("Content-Disposition", `attachment; filename=fundscore_audit_workbook_${runDate}.xlsx`);
+      res.send(buffer);
+    } catch (err: any) {
+      console.error("Excel export error:", err);
+      res.status(500).json({ error: err.message || "Failed to generate Excel audit workbook" });
+    }
+  });
+
+  // ============ COMPARISON RADAR "WEB" ============
+  app.get("/api/funds/radar/:symbol", (req, res) => {
+    const symbol = req.params.symbol.trim().toUpperCase();
+    const fund = storage.getFundBySymbol(symbol);
+    if (!fund) {
+      return res.status(404).json({ error: "Fund not found" });
+    }
+
+    const categoryFunds = fund.categoryName
+      ? storage.getFundsByCategory(fund.categoryName)
+      : [fund];
+
+    const breakdown = getFundBreakdown(fund, categoryFunds);
+
+    res.json({
+      fund: {
+        symbol: fund.symbol,
+        name: fund.name,
+        categoryName: fund.categoryName,
+        isIndexFund: fund.isIndexFund,
+        netExpenseRatio: fund.netExpenseRatio,
+        score: fund.score,
+        scoreBand: fund.scoreBand,
+        score2023: fund.score2023,
+        score2025: fund.score2025,
+        scoreGap: fund.scoreGap,
+        rank2023: fund.rank2023,
+        rank2025: fund.rank2025,
+        consensusRank: fund.consensusRank,
+        quadrant: fund.quadrant,
+        actionFlag: fund.actionFlag,
+        primaryDriver: fund.primaryDriver,
+      },
+      categoryPeerCount: categoryFunds.length,
+      breakdown,
+    });
+  });
+
+  // ============ REPLACEMENT WORKBENCH ============
+  app.get("/api/replacement-workbench", (req, res) => {
+    const symbol = req.query.symbol as string;
+    if (!symbol) {
+      return res.status(400).json({ error: "Symbol query parameter required" });
+    }
+
+    const topN = parseInt(req.query.topN as string) || 10;
+    const result = buildReplacementWorkbench(symbol, topN);
+
+    if (!result) {
+      return res.status(404).json({ error: `Fund ${symbol} not found` });
+    }
+
+    res.json(result);
+  });
+
+  // Standalone printable committee brief HTML
+  app.get("/api/replacement-workbench/brief/:symbol", (req, res) => {
+    const symbol = req.params.symbol;
+    const topN = parseInt(req.query.topN as string) || 10;
+    const result = buildReplacementWorkbench(symbol, topN);
+
+    if (!result) {
+      return res.status(404).send(`Fund ${symbol} not found`);
+    }
+
+    const latestRun = storage.getLatestScoringRun();
+    const runDate = latestRun?.runDate || new Date().toISOString().split("T")[0];
+    const html = renderReplacementBriefHtml(result, runDate);
+
+    res.setHeader("Content-Type", "text/html; charset=utf-8");
+    res.send(html);
+  });
+
+  // ============ SCORING RUNS & SNAPSHOTS ============
+  app.get("/api/runs", (_req, res) => {
+    const dbRuns = storage.getScoringRuns();
+    const diskRuns = listRunArchives();
+    res.json({
+      latestRunDate: loadLatestRunDate(),
+      dbRuns,
+      diskRuns,
+    });
+  });
+
+  app.get("/api/runs/:runDate/dual-table", (req, res) => {
+    const runDate = req.params.runDate;
+    const table = loadRunDualTable(runDate);
+    if (!table) {
+      return res.status(404).json({ error: `Run ${runDate} not found` });
+    }
+    res.json(table);
+  });
+
+  app.get("/api/runs/:runDate/export/excel", async (req, res) => {
+    try {
+      const runDate = req.params.runDate;
+      const table = loadRunDualTable(runDate);
+      if (!table) {
+        return res.status(404).json({ error: `Run ${runDate} not found` });
+      }
+
+      const validation = buildValidationSummary(table);
+      const buffer = await generateAuditWorkbook(
+        table,
+        {
+          runDate,
+          rowCount: table.length,
+          joinedCount: validation.joinedCount,
+          scoreSystemVersion: "dual-2023-combined+2025-split",
+        },
+        validation
+      );
+
+      res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+      res.setHeader("Content-Disposition", `attachment; filename=fundscore_audit_workbook_${runDate}.xlsx`);
+      res.send(buffer);
+    } catch (err: any) {
+      console.error("Error exporting run Excel:", err);
+      res.status(500).json({ error: err.message || "Failed to generate Excel export" });
+    }
+  });
 
   // ============ DASHBOARD STATS ============
   app.get("/api/stats", (_req, res) => {
     const stats = storage.getFundStats();
     const allFunds = storage.getAllFunds().filter(f => f.score !== null);
-    
+
     // Score distribution for histogram (buckets of 5)
     const histogram: { range: string; count: number }[] = [];
     for (let i = 0; i < 100; i += 5) {
       const count = allFunds.filter(f => f.score! >= i && f.score! < i + 5).length;
       histogram.push({ range: `${i}-${i + 5}`, count });
     }
-    // 100 exactly
     const hundredCount = allFunds.filter(f => f.score! >= 100).length;
     if (hundredCount > 0) {
       histogram[histogram.length - 1].count += hundredCount;
@@ -165,7 +560,6 @@ export async function registerRoutes(
 
     const breakdown = getFundBreakdown(fund, categoryFunds);
 
-    // Category peers sorted by score
     const peers = categoryFunds
       .filter(f => f.score !== null)
       .sort((a, b) => (b.score || 0) - (a.score || 0))
@@ -175,6 +569,11 @@ export async function registerRoutes(
         name: f.name,
         score: f.score,
         scoreBand: f.scoreBand,
+        score2023: f.score2023,
+        score2025: f.score2025,
+        consensusRank: f.consensusRank,
+        quadrant: f.quadrant,
+        actionFlag: f.actionFlag,
         netExpenseRatio: f.netExpenseRatio,
       }));
 
@@ -199,7 +598,6 @@ export async function registerRoutes(
     const strongCount = scores.filter(s => s >= 80).length;
     const weakCount = scores.filter(s => s < 60).length;
 
-    // Distribution
     const distribution: { range: string; count: number }[] = [];
     for (let i = 0; i < 100; i += 10) {
       const count = scores.filter(s => s >= i && s < i + 10).length;
@@ -226,7 +624,6 @@ export async function registerRoutes(
   // ============ MONITORING ============
   app.get("/api/monitoring", (_req, res) => {
     const holdings = storage.getMonitoringHoldings();
-    // Enrich with current fund data
     const enriched = holdings.map(h => {
       const fund = storage.getFundBySymbol(h.symbol);
       return {
@@ -236,6 +633,11 @@ export async function registerRoutes(
         fundName: fund?.name || "Unknown",
         categoryName: fund?.categoryName || null,
         scoreBand: fund?.scoreBand || null,
+        score2023: fund?.score2023 || null,
+        score2025: fund?.score2025 || null,
+        consensusRank: fund?.consensusRank || null,
+        quadrant: fund?.quadrant || null,
+        actionFlag: fund?.actionFlag || null,
         categoryPercentile: fund?.categoryPercentile || null,
       };
     });
@@ -276,39 +678,97 @@ export async function registerRoutes(
     res.json({ success: true });
   });
 
+  // ============ PREFLIGHT CSV VALIDATION ============
+  app.post("/api/upload/validate", upload.single("file"), (req, res) => {
+    if (!req.file) return res.status(400).json({ error: "No file uploaded" });
+
+    try {
+      const csvText = fs.readFileSync(req.file.path, "utf-8");
+      fs.unlinkSync(req.file.path);
+      const validation = validateYChartsCSV(csvText, "2025");
+      res.json(validation);
+    } catch (err: any) {
+      if (req.file && fs.existsSync(req.file.path)) {
+        fs.unlinkSync(req.file.path);
+      }
+      res.status(500).json({ error: err.message || "Failed to validate CSV" });
+    }
+  });
+
   // ============ CSV UPLOAD ============
   app.post("/api/upload", upload.single("file"), (req, res) => {
     if (!req.file) return res.status(400).json({ error: "No file uploaded" });
 
     try {
       const csvText = fs.readFileSync(req.file.path, "utf-8");
-      const parsed = Papa.parse(csvText, { header: true, skipEmptyLines: true });
+      const validation = validateYChartsCSV(csvText, "2025");
+      if (validation.failed) {
+        fs.unlinkSync(req.file.path);
+        return res.status(400).json({
+          error: "CSV validation failed",
+          details: validation.errors,
+        });
+      }
 
+      const parsed = Papa.parse(csvText, { header: true, skipEmptyLines: true });
       const fundRows: InsertFund[] = parsed.data
         .map((row: any) => parseCSVRow(row))
         .filter((f: InsertFund) => f.symbol && f.name);
 
-      // Create upload batch
       const batch = storage.createUploadBatch({
         filename: req.file.originalname || "upload.csv",
         rowCount: fundRows.length,
         uploadedAt: new Date().toISOString(),
       });
 
-      // Clear existing and insert new
       storage.clearFunds();
       const fundsWithBatch = fundRows.map(f => ({ ...f, uploadBatchId: batch.id }));
       storage.insertFunds(fundsWithBatch);
 
-      // Score all
+      // Score 2025
       const allFunds = storage.getAllFunds();
       const scores = scoreAllFunds(allFunds);
       storage.updateFundScores(scores);
 
-      // Cleanup temp file
+      // Attempt dual scoring if scores_2023 exists
+      const seed2023Paths = [
+        path.join(process.cwd(), "server", "data", "scores_2023.csv"),
+        path.resolve("server", "data", "scores_2023.csv"),
+        path.resolve("data", "scores_2023.csv"),
+        path.resolve("..", "streamlit", "scores_2023.csv"),
+      ];
+      const csv2023Path = seed2023Paths.find(p => fs.existsSync(p)) || null;
+
+      let dualCount = 0;
+      if (csv2023Path) {
+        const csv2023Text = fs.readFileSync(csv2023Path, "utf-8");
+        const parsed2023 = Papa.parse(csv2023Text, { header: true, dynamicTyping: true, skipEmptyLines: true });
+        const scored2023 = score2023Funds(parsed2023.data as any[]);
+        const dualTable = buildDualScoreTable(scores, scored2023, "inner");
+        storage.updateFundDualScores(dualTable);
+        dualCount = dualTable.length;
+
+        // Archive run
+        const runDate = new Date().toISOString().split("T")[0];
+        const hash2025 = computeSHA256(csvText);
+        const hash2023 = computeSHA256(csv2023Text);
+        const archiveResult = saveRunArchive(runDate, dualTable, { hash2025, hash2023 });
+
+        storage.createScoringRun({
+          runDate,
+          label: `Uploaded ${req.file.originalname || "YCharts"} Run`,
+          createdAt: new Date().toISOString(),
+          rowCount: dualTable.length,
+          joinedCount: archiveResult.validation.joinedCount,
+          hash2025,
+          hash2023,
+          validationJson: JSON.stringify(archiveResult.validation),
+        });
+      }
+
       fs.unlinkSync(req.file.path);
 
-      // Auto-create snapshot after scoring
+      // Snapshot
       const snapshotDate = new Date().toISOString().split("T")[0];
       const now = new Date();
       const snapshotLabel = now.toLocaleDateString("en-US", { month: "long", year: "numeric" });
@@ -319,14 +779,17 @@ export async function registerRoutes(
         batchId: batch.id,
         rowCount: fundRows.length,
         scoredCount: scores.length,
+        dualScoredCount: dualCount,
       });
     } catch (err: any) {
+      if (req.file && fs.existsSync(req.file.path)) {
+        fs.unlinkSync(req.file.path);
+      }
       res.status(500).json({ error: err.message });
     }
   });
 
-  app.get("/api/upload/preview", upload.single("file"), (req, res) => {
-    // Just return upload batch history
+  app.get("/api/upload/preview", (_req, res) => {
     res.json(storage.getUploadBatches());
   });
 
@@ -361,7 +824,7 @@ export async function registerRoutes(
     res.json(storage.getFundHistory(symbol));
   });
 
-  // ============ EXPORT ============
+  // ============ CSV EXPORT ============
   app.get("/api/export/csv", (_req, res) => {
     const allFunds = storage.getAllFunds();
     const csv = Papa.unparse(allFunds.map(f => ({
@@ -373,6 +836,13 @@ export async function registerRoutes(
       Score: f.score,
       "Score Band": f.scoreBand,
       "Category Percentile": f.categoryPercentile,
+      "Score 2023": f.score2023,
+      "Score 2025": f.score2025,
+      "Score Gap": f.scoreGap,
+      "Consensus Rank": f.consensusRank,
+      Quadrant: f.quadrant,
+      "Action Flag": f.actionFlag,
+      "Primary Driver": f.primaryDriver,
     })));
 
     res.setHeader("Content-Type", "text/csv");
@@ -380,7 +850,7 @@ export async function registerRoutes(
     res.send(csv);
   });
 
-  // PDF export
+  // PDF report
   app.get("/api/export/pdf", (_req, res) => {
     const categoriesParam = _req.query.categories as string | undefined;
     const categoryFilter = categoriesParam ? categoriesParam.split(",").map(c => c.trim()) : undefined;

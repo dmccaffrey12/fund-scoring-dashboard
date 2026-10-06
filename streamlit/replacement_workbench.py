@@ -1573,12 +1573,12 @@ def write_replacement(result: ReplacementResult, out_dir: str) -> Dict[str, str]
     paths["current_profile"] = profile_path
 
     summary_path = os.path.join(out_dir, SUMMARY_NAME)
-    with open(summary_path, "w") as f:
+    with open(summary_path, "w", encoding="utf-8") as f:
         json.dump(result.summary, f, indent=2, sort_keys=True, default=str)
     paths["summary"] = summary_path
 
     brief_path = os.path.join(out_dir, BRIEF_NAME)
-    with open(brief_path, "w") as f:
+    with open(brief_path, "w", encoding="utf-8") as f:
         f.write(result.brief_markdown)
     paths["brief"] = brief_path
 
@@ -1619,7 +1619,7 @@ def load_replacement(out_dir: str) -> Optional[Dict[str, Any]]:
     summary_path = os.path.join(out_dir, SUMMARY_NAME)
     if os.path.isfile(summary_path):
         try:
-            with open(summary_path) as f:
+            with open(summary_path, encoding="utf-8") as f:
                 summary = json.load(f)
         except json.JSONDecodeError:
             summary = {}
@@ -1627,7 +1627,7 @@ def load_replacement(out_dir: str) -> Optional[Dict[str, Any]]:
     brief = ""
     brief_path = os.path.join(out_dir, BRIEF_NAME)
     if os.path.isfile(brief_path):
-        with open(brief_path) as f:
+        with open(brief_path, encoding="utf-8") as f:
             brief = f.read()
 
     return {
