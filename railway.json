@@ -1,8 +1,7 @@
 {
   "$schema": "https://railway.app/railway.schema.json",
   "build": {
-    "builder": "NIXPACKS",
-    "watchPatterns": ["webapp/**"]
+    "builder": "NIXPACKS"
   },
   "deploy": {
     "startCommand": "npm --prefix webapp start",
