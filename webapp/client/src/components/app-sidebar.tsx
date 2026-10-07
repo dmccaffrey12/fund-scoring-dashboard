@@ -24,7 +24,7 @@ import { PerplexityAttribution } from "@/components/PerplexityAttribution";
 
 const navItems = [
   { title: "Dashboard", url: "/", icon: LayoutDashboard },
-  { title: "Batch Scores", url: "/scores", icon: Table2 },
+  { title: "Committee Audit", url: "/scores", icon: Table2 },
   { title: "Fund Lookup", url: "/lookup", icon: Search },
   { title: "Category Analysis", url: "/categories", icon: BarChart3 },
   { title: "History", url: "/history", icon: Clock },

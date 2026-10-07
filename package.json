@@ -1,0 +1,10 @@
+{
+  "name": "fundscore-root",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "npm --prefix webapp install && npm --prefix webapp run build",
+    "start": "npm --prefix webapp start"
+  }
+}

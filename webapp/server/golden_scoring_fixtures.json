@@ -1,0 +1,208 @@
+{
+  "synthetic": {
+    "passive_dominator": {
+      "inputs": [
+        {
+          "Symbol": "TOP",
+          "Name": "Top Passive",
+          "Index Fund": true,
+          "Category Name": "Synthetic Passive Cat",
+          "Net Expense Ratio": 0.03,
+          "Tracking Error (vs Category) (3Y)": 0.05,
+          "Tracking Error (vs Category) (5Y)": 0.06,
+          "Tracking Error (vs Category) (10Y)": 0.07,
+          "R-Squared (vs Category) (5Y)": 0.99,
+          "Share Class Assets Under Management": 1000000000.0,
+          "Downside (vs Category) (5Y)": 85.0,
+          "Downside (vs Category) (10Y)": 88.0,
+          "Max Drawdown (5Y)": 12.0,
+          "Max Drawdown (10Y)": 15.0
+        },
+        {
+          "Symbol": "BOT",
+          "Name": "Bottom Passive",
+          "Index Fund": true,
+          "Category Name": "Synthetic Passive Cat",
+          "Net Expense Ratio": 0.85,
+          "Tracking Error (vs Category) (3Y)": 2.5,
+          "Tracking Error (vs Category) (5Y)": 2.6,
+          "Tracking Error (vs Category) (10Y)": 2.8,
+          "R-Squared (vs Category) (5Y)": 0.65,
+          "Share Class Assets Under Management": 50000000.0,
+          "Downside (vs Category) (5Y)": 115.0,
+          "Downside (vs Category) (10Y)": 120.0,
+          "Max Drawdown (5Y)": 25.0,
+          "Max Drawdown (10Y)": 30.0
+        }
+      ],
+      "outputs": [
+        {
+          "Symbol": "TOP",
+          "Score_Passive": 100.0,
+          "Score_Active": 100.0,
+          "Score_Final": 100.0,
+          "Score_Band": "STRONG"
+        },
+        {
+          "Symbol": "BOT",
+          "Score_Passive": 50.0,
+          "Score_Active": 50.0,
+          "Score_Final": 50.0,
+          "Score_Band": "WEAK"
+        }
+      ]
+    },
+    "singleton_category": {
+      "inputs": [
+        {
+          "Symbol": "SOLO",
+          "Name": "Solo Active Fund",
+          "Index Fund": false,
+          "Category Name": "Solo Peer Category",
+          "Net Expense Ratio": 0.5,
+          "Information Ratio (vs Category) (3Y)": 0.5,
+          "Information Ratio (vs Category) (5Y)": 0.6,
+          "Information Ratio (vs Category) (10Y)": 0.7,
+          "Historical Sortino (3Y)": 1.2,
+          "Historical Sortino (5Y)": 1.1,
+          "Historical Sortino (10Y)": 1.0,
+          "Max Drawdown (5Y)": 18.0,
+          "Max Drawdown (10Y)": 20.0,
+          "Downside (vs Category) (5Y)": 95.0,
+          "Downside (vs Category) (10Y)": 98.0,
+          "3 Year Total Returns (Daily)": 0.12,
+          "5 Year Total Returns (Daily)": 0.1,
+          "10 Year Total Returns (Daily)": 0.09,
+          "Upside (vs Category) (5Y)": 105.0,
+          "Upside (vs Category) (10Y)": 102.0
+        }
+      ],
+      "outputs": [
+        {
+          "Symbol": "SOLO",
+          "Score_Passive": 100.0,
+          "Score_Active": 100.0,
+          "Score_Final": 100.0,
+          "Score_Band": "STRONG"
+        }
+      ]
+    }
+  },
+  "fixture_2025_scored": [
+    {
+      "Symbol": "AAA",
+      "Name": "Fixture Fund Alpha",
+      "Category Name": "Fake Large Blend",
+      "Index Fund": 1,
+      "Fund_Type": "Passive",
+      "Score_Passive": 97.222222,
+      "Score_Active": 68.5,
+      "Score_Final": 97.222222,
+      "Score_Band": "STRONG"
+    },
+    {
+      "Symbol": "BBB",
+      "Name": "Fixture Fund Beta",
+      "Category Name": "Fake Large Blend",
+      "Index Fund": 0,
+      "Fund_Type": "Active",
+      "Score_Passive": 52.777778,
+      "Score_Active": 81.5,
+      "Score_Final": 81.5,
+      "Score_Band": "STRONG"
+    },
+    {
+      "Symbol": "CCC",
+      "Name": "Fixture Fund Gamma",
+      "Category Name": "Fake Small Value",
+      "Index Fund": 0,
+      "Fund_Type": "Active",
+      "Score_Passive": 100.0,
+      "Score_Active": 100.0,
+      "Score_Final": 100.0,
+      "Score_Band": "STRONG"
+    }
+  ],
+  "fixture_2023_scored": [
+    {
+      "Symbol": "AAA",
+      "Name": "Fixture Fund Alpha",
+      "Category Name": "Fake Large Blend",
+      "Score_2023": 100.0,
+      "Avail_Weight": 100.0
+    },
+    {
+      "Symbol": "BBB",
+      "Name": "Fixture Fund Beta",
+      "Category Name": "Fake Large Blend",
+      "Score_2023": 50.0,
+      "Avail_Weight": 100.0
+    },
+    {
+      "Symbol": "CCC",
+      "Name": "Fixture Fund Gamma",
+      "Category Name": "Fake Small Value",
+      "Score_2023": 100.0,
+      "Avail_Weight": 100.0
+    }
+  ],
+  "dual_score_table": [
+    {
+      "Symbol": "CCC",
+      "Name": "Fixture Fund Gamma",
+      "Category": "Fake Small Value",
+      "Fund_Type": "Active",
+      "Score_2023_Final": 100.0,
+      "Score_2025_Final": 100.0,
+      "Score_Gap": 0.0,
+      "Rank_2023": 1,
+      "Rank_2025": 1,
+      "Consensus_Rank": 1,
+      "Score_Band_2023": "STRONG",
+      "Score_Band_2025": "STRONG",
+      "Quadrant": "Q1_Both_Strong",
+      "Action_Flag": "LEAD",
+      "Primary_Driver": "Stable",
+      "Data_Coverage_2023": 1.0,
+      "Data_Coverage_2025": 1.0
+    },
+    {
+      "Symbol": "AAA",
+      "Name": "Fixture Fund Alpha",
+      "Category": "Fake Large Blend",
+      "Fund_Type": "Passive",
+      "Score_2023_Final": 100.0,
+      "Score_2025_Final": 97.222222,
+      "Score_Gap": -2.777778,
+      "Rank_2023": 1,
+      "Rank_2025": 2,
+      "Consensus_Rank": 2,
+      "Score_Band_2023": "STRONG",
+      "Score_Band_2025": "STRONG",
+      "Quadrant": "Q1_Both_Strong",
+      "Action_Flag": "LEAD",
+      "Primary_Driver": "Stable",
+      "Data_Coverage_2023": 1.0,
+      "Data_Coverage_2025": 1.0
+    },
+    {
+      "Symbol": "BBB",
+      "Name": "Fixture Fund Beta",
+      "Category": "Fake Large Blend",
+      "Fund_Type": "Active",
+      "Score_2023_Final": 50.0,
+      "Score_2025_Final": 81.5,
+      "Score_Gap": 31.5,
+      "Rank_2023": 2,
+      "Rank_2025": 3,
+      "Consensus_Rank": 3,
+      "Score_Band_2023": "WEAK",
+      "Score_Band_2025": "STRONG",
+      "Quadrant": "Q2_Only_2025",
+      "Action_Flag": "REVIEW",
+      "Primary_Driver": "Upgraded by 2025 system",
+      "Data_Coverage_2023": 1.0,
+      "Data_Coverage_2025": 1.0
+    }
+  ]
+}

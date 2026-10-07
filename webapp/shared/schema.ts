@@ -2,7 +2,7 @@ import { sqliteTable, text, integer, real } from "drizzle-orm/sqlite-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 
-// Scored funds table — stores all fund data + computed scores
+// Scored funds table — stores all fund data + computed dual scores
 export const funds = sqliteTable("funds", {
   id: integer("id").primaryKey({ autoIncrement: true }),
   symbol: text("symbol").notNull(),
@@ -34,18 +34,48 @@ export const funds = sqliteTable("funds", {
   returns10Y: real("returns_10y"),
   oldestShareSymbol: text("oldest_share_symbol"),
   shareClass: text("share_class"),
-  // Computed scores
-  score: real("score"),
+  // Computed 2025 scores
+  score: real("score"), // Current 2025 score
   scoreBand: text("score_band"), // STRONG, REVIEW, WEAK
   categoryPercentile: real("category_percentile"),
+  // Computed Dual-Lens scores & ranks
+  score2023: real("score_2023"),
+  score2025: real("score_2025"),
+  scoreGap: real("score_gap"),
+  rank2023: integer("rank_2023"),
+  rank2025: integer("rank_2025"),
+  consensusRank: integer("consensus_rank"),
+  scoreBand2023: text("score_band_2023"),
+  scoreBand2025: text("score_band_2025"),
+  quadrant: text("quadrant"), // Q1_Both_Strong, Q2_Only_2025, Q3_Only_2023, Q4_Both_Weak
+  actionFlag: text("action_flag"), // LEAD, REVIEW, WATCH, DROP
+  primaryDriver: text("primary_driver"),
+  dataCoverage2023: real("data_coverage_2023"),
+  dataCoverage2025: real("data_coverage_2025"),
   // Upload batch tracking
   uploadBatchId: integer("upload_batch_id"),
+});
+
+// Scoring runs table
+export const scoringRuns = sqliteTable("scoring_runs", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  runDate: text("run_date").notNull().unique(),
+  label: text("label"),
+  createdAt: text("created_at").notNull(),
+  rowCount: integer("row_count").notNull(),
+  joinedCount: integer("joined_count").notNull(),
+  hash2025: text("hash_2025"),
+  hash2023: text("hash_2023"),
+  validationJson: text("validation_json"),
 });
 
 // Monitoring / model portfolio holdings
 export const monitoringHoldings = sqliteTable("monitoring_holdings", {
   id: integer("id").primaryKey({ autoIncrement: true }),
   symbol: text("symbol").notNull(),
+  modelName: text("model_name"),
+  targetWeight: real("target_weight"),
+  sleeve: text("sleeve"),
   baselineScore: real("baseline_score"),
   baselineExpenseRatio: real("baseline_expense_ratio"),
   addedAt: text("added_at").notNull(),
@@ -74,6 +104,7 @@ export const uploadBatches = sqliteTable("upload_batches", {
 
 // Insert schemas
 export const insertFundSchema = createInsertSchema(funds).omit({ id: true });
+export const insertScoringRunSchema = createInsertSchema(scoringRuns).omit({ id: true });
 export const insertMonitoringSchema = createInsertSchema(monitoringHoldings).omit({ id: true });
 export const insertScoreSnapshotSchema = createInsertSchema(scoreSnapshots).omit({ id: true });
 export const insertUploadBatchSchema = createInsertSchema(uploadBatches).omit({ id: true });
@@ -81,6 +112,8 @@ export const insertUploadBatchSchema = createInsertSchema(uploadBatches).omit({ 
 // Types
 export type Fund = typeof funds.$inferSelect;
 export type InsertFund = z.infer<typeof insertFundSchema>;
+export type ScoringRun = typeof scoringRuns.$inferSelect;
+export type InsertScoringRun = z.infer<typeof insertScoringRunSchema>;
 export type MonitoringHolding = typeof monitoringHoldings.$inferSelect;
 export type InsertMonitoringHolding = z.infer<typeof insertMonitoringSchema>;
 export type ScoreSnapshot = typeof scoreSnapshots.$inferSelect;
