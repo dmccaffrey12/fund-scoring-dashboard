@@ -685,7 +685,8 @@ export async function registerRoutes(
     try {
       const csvText = fs.readFileSync(req.file.path, "utf-8");
       fs.unlinkSync(req.file.path);
-      const validation = validateYChartsCSV(csvText, "2025");
+      const schema = (req.query.schema as "2025" | "2023") || (req.body?.schema as "2025" | "2023") || "2025";
+      const validation = validateYChartsCSV(csvText, schema);
       res.json(validation);
     } catch (err: any) {
       if (req.file && fs.existsSync(req.file.path)) {
@@ -695,99 +696,162 @@ export async function registerRoutes(
     }
   });
 
-  // ============ CSV UPLOAD ============
-  app.post("/api/upload", upload.single("file"), (req, res) => {
-    if (!req.file) return res.status(400).json({ error: "No file uploaded" });
+  // ============ CSV UPLOAD (PAIRED OR INDIVIDUAL) ============
+  app.post(
+    "/api/upload",
+    upload.fields([
+      { name: "file2025", maxCount: 1 },
+      { name: "file2023", maxCount: 1 },
+      { name: "file", maxCount: 1 },
+    ]),
+    (req, res) => {
+      const files = req.files as { [fieldname: string]: Express.Multer.File[] } | undefined;
+      const file2025 = files?.["file2025"]?.[0] || files?.["file"]?.[0] || (req.file as Express.Multer.File | undefined);
+      const file2023 = files?.["file2023"]?.[0];
 
-    try {
-      const csvText = fs.readFileSync(req.file.path, "utf-8");
-      const validation = validateYChartsCSV(csvText, "2025");
-      if (validation.failed) {
-        fs.unlinkSync(req.file.path);
-        return res.status(400).json({
-          error: "CSV validation failed",
-          details: validation.errors,
-        });
+      if (!file2025 && !file2023) {
+        return res.status(400).json({ error: "No CSV files uploaded. Please upload a 2025 or 2023 YCharts export." });
       }
 
-      const parsed = Papa.parse(csvText, { header: true, skipEmptyLines: true });
-      const fundRows: InsertFund[] = parsed.data
-        .map((row: any) => parseCSVRow(row))
-        .filter((f: InsertFund) => f.symbol && f.name);
+      const runDate = req.body?.runDate || new Date().toISOString().split("T")[0];
+      const runLabel = req.body?.runLabel || `Committee Run ${runDate}`;
 
-      const batch = storage.createUploadBatch({
-        filename: req.file.originalname || "upload.csv",
-        rowCount: fundRows.length,
-        uploadedAt: new Date().toISOString(),
-      });
+      try {
+        let csv2025Text: string | null = null;
+        let csv2023Text: string | null = null;
 
-      storage.clearFunds();
-      const fundsWithBatch = fundRows.map(f => ({ ...f, uploadBatchId: batch.id }));
-      storage.insertFunds(fundsWithBatch);
+        if (file2025) {
+          csv2025Text = fs.readFileSync(file2025.path, "utf-8");
+          const val2025 = validateYChartsCSV(csv2025Text, "2025");
+          if (val2025.failed) {
+            fs.unlinkSync(file2025.path);
+            if (file2023 && fs.existsSync(file2023.path)) fs.unlinkSync(file2023.path);
+            return res.status(400).json({
+              error: "2025 CSV validation failed",
+              details: val2025.errors,
+            });
+          }
+        }
 
-      // Score 2025
-      const allFunds = storage.getAllFunds();
-      const scores = scoreAllFunds(allFunds);
-      storage.updateFundScores(scores);
+        if (file2023) {
+          csv2023Text = fs.readFileSync(file2023.path, "utf-8");
+          const val2023 = validateYChartsCSV(csv2023Text, "2023");
+          if (val2023.failed) {
+            if (file2025 && fs.existsSync(file2025.path)) fs.unlinkSync(file2025.path);
+            fs.unlinkSync(file2023.path);
+            return res.status(400).json({
+              error: "2023 CSV validation failed",
+              details: val2023.errors,
+            });
+          }
+        }
 
-      // Attempt dual scoring if scores_2023 exists
-      const seed2023Paths = [
-        path.join(process.cwd(), "server", "data", "scores_2023.csv"),
-        path.resolve("server", "data", "scores_2023.csv"),
-        path.resolve("data", "scores_2023.csv"),
-        path.resolve("..", "streamlit", "scores_2023.csv"),
-      ];
-      const csv2023Path = seed2023Paths.find(p => fs.existsSync(p)) || null;
+        // Case A: 2025 provided (or both)
+        let scored2025: any[] = [];
+        if (csv2025Text && file2025) {
+          const parsed = Papa.parse(csv2025Text, { header: true, skipEmptyLines: true });
+          const fundRows: InsertFund[] = parsed.data
+            .map((row: any) => parseCSVRow(row))
+            .filter((f: InsertFund) => f.symbol && f.name);
 
-      let dualCount = 0;
-      if (csv2023Path) {
-        const csv2023Text = fs.readFileSync(csv2023Path, "utf-8");
-        const parsed2023 = Papa.parse(csv2023Text, { header: true, dynamicTyping: true, skipEmptyLines: true });
-        const scored2023 = score2023Funds(parsed2023.data as any[]);
-        const dualTable = buildDualScoreTable(scores, scored2023, "inner");
-        storage.updateFundDualScores(dualTable);
-        dualCount = dualTable.length;
+          const batch = storage.createUploadBatch({
+            filename: file2025.originalname || "ycharts_2025.csv",
+            rowCount: fundRows.length,
+            uploadedAt: new Date().toISOString(),
+          });
 
-        // Archive run
-        const runDate = new Date().toISOString().split("T")[0];
-        const hash2025 = computeSHA256(csvText);
-        const hash2023 = computeSHA256(csv2023Text);
-        const archiveResult = saveRunArchive(runDate, dualTable, { hash2025, hash2023 });
+          storage.clearFunds();
+          const fundsWithBatch = fundRows.map(f => ({ ...f, uploadBatchId: batch.id }));
+          storage.insertFunds(fundsWithBatch);
 
-        storage.createScoringRun({
+          const allFunds = storage.getAllFunds();
+          scored2025 = scoreAllFunds(allFunds);
+          storage.updateFundScores(scored2025);
+        } else {
+          // If only 2023 uploaded, use existing 2025 funds
+          const allFunds = storage.getAllFunds();
+          scored2025 = scoreAllFunds(allFunds);
+        }
+
+        // Locate or read 2023 data
+        const seed2023Paths = [
+          path.join(process.cwd(), "server", "data", "scores_2023.csv"),
+          path.resolve("server", "data", "scores_2023.csv"),
+          path.resolve("data", "scores_2023.csv"),
+          path.resolve("..", "streamlit", "scores_2023.csv"),
+        ];
+        const existing2023Path = seed2023Paths.find(p => fs.existsSync(p)) || null;
+
+        if (!csv2023Text && existing2023Path) {
+          csv2023Text = fs.readFileSync(existing2023Path, "utf-8");
+        }
+
+        let dualCount = 0;
+        let scored2023Count = 0;
+
+        if (csv2023Text) {
+          // If a new 2023 file was uploaded, persist it to server/data/scores_2023.csv
+          if (file2023) {
+            const dest2023 = path.resolve("server", "data", "scores_2023.csv");
+            fs.mkdirSync(path.dirname(dest2023), { recursive: true });
+            fs.writeFileSync(dest2023, csv2023Text, "utf-8");
+          }
+
+          const parsed2023 = Papa.parse(csv2023Text, { header: true, dynamicTyping: true, skipEmptyLines: true });
+          const scored2023 = score2023Funds(parsed2023.data as any[]);
+          scored2023Count = scored2023.length;
+
+          if (scored2025.length > 0) {
+            const dualTable = buildDualScoreTable(scored2025, scored2023, "inner");
+            storage.updateFundDualScores(dualTable);
+            dualCount = dualTable.length;
+
+            // Archive run
+            const hash2025 = csv2025Text ? computeSHA256(csv2025Text) : undefined;
+            const hash2023 = computeSHA256(csv2023Text);
+            const archiveResult = saveRunArchive(runDate, dualTable, { hash2025, hash2023 });
+
+            storage.createScoringRun({
+              runDate,
+              label: runLabel,
+              createdAt: new Date().toISOString(),
+              rowCount: dualTable.length,
+              joinedCount: archiveResult.validation.joinedCount,
+              hash2025,
+              hash2023,
+              validationJson: JSON.stringify(archiveResult.validation),
+            });
+          }
+        }
+
+        // Cleanup temp files
+        if (file2025 && fs.existsSync(file2025.path)) fs.unlinkSync(file2025.path);
+        if (file2023 && fs.existsSync(file2023.path)) fs.unlinkSync(file2023.path);
+
+        // Snapshot
+        const now = new Date();
+        const snapshotLabel = now.toLocaleDateString("en-US", { month: "long", year: "numeric" });
+        storage.createSnapshot(runDate, snapshotLabel);
+
+        res.json({
+          success: true,
           runDate,
-          label: `Uploaded ${req.file.originalname || "YCharts"} Run`,
-          createdAt: new Date().toISOString(),
-          rowCount: dualTable.length,
-          joinedCount: archiveResult.validation.joinedCount,
-          hash2025,
-          hash2023,
-          validationJson: JSON.stringify(archiveResult.validation),
+          runLabel,
+          scored2025Count: scored2025.length,
+          scored2023Count,
+          dualScoredCount: dualCount,
+          uploadedFiles: {
+            has2025: !!file2025,
+            has2023: !!file2023,
+          },
         });
+      } catch (err: any) {
+        if (file2025 && fs.existsSync(file2025.path)) fs.unlinkSync(file2025.path);
+        if (file2023 && fs.existsSync(file2023.path)) fs.unlinkSync(file2023.path);
+        res.status(500).json({ error: err.message || "Failed to process upload" });
       }
-
-      fs.unlinkSync(req.file.path);
-
-      // Snapshot
-      const snapshotDate = new Date().toISOString().split("T")[0];
-      const now = new Date();
-      const snapshotLabel = now.toLocaleDateString("en-US", { month: "long", year: "numeric" });
-      storage.createSnapshot(snapshotDate, snapshotLabel);
-
-      res.json({
-        success: true,
-        batchId: batch.id,
-        rowCount: fundRows.length,
-        scoredCount: scores.length,
-        dualScoredCount: dualCount,
-      });
-    } catch (err: any) {
-      if (req.file && fs.existsSync(req.file.path)) {
-        fs.unlinkSync(req.file.path);
-      }
-      res.status(500).json({ error: err.message });
     }
-  });
+  );
 
   app.get("/api/upload/preview", (_req, res) => {
     res.json(storage.getUploadBatches());
